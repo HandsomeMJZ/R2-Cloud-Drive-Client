@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>R2 Cloud Drive</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="window-frame">
+      <header class="window-titlebar">
+        <div id="titlebarDrag" class="titlebar-drag">
+          <div class="titlebar-mark">R2</div>
+          <span>R2 Cloud Drive</span>
+        </div>
+        <div class="window-controls">
+          <button id="windowMinimizeButton" class="window-control" type="button" title="最小化">
+            <span class="icon minimize-icon" aria-hidden="true"></span>
+          </button>
+          <button id="windowMaximizeButton" class="window-control" type="button" title="最大化">
+            <span class="icon maximize-icon" aria-hidden="true"></span>
+          </button>
+          <button id="windowCloseButton" class="window-control close-window" type="button" title="关闭">
+            <span class="icon close-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+      </header>
+      <div id="loadingBar" class="loading-bar" aria-hidden="true"></div>
+
+      <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">R2</div>
+          <div class="brand-copy">
+            <div class="brand-title">Cloud Drive</div>
+            <div id="serverStatus" class="muted ellipsis">未连接</div>
+          </div>
+        </div>
+
+        <button id="newButton" class="new-button" type="button" aria-haspopup="menu" aria-expanded="false">
+          <span class="icon plus-icon" aria-hidden="true"></span>
+          <span>新建</span>
+        </button>
+        <div id="newMenu" class="surface-menu new-menu hidden" role="menu" aria-label="新建操作">
+          <button id="newFolderAction" type="button" role="menuitem">
+            <span class="icon folder-plus-icon" aria-hidden="true"></span>
+            <span>新建文件夹</span>
+          </button>
+          <button id="newUploadAction" type="button" role="menuitem">
+            <span class="icon upload-icon" aria-hidden="true"></span>
+            <span>上传文件</span>
+          </button>
+        </div>
+
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item active" data-view="drive" type="button">
+            <span class="icon drive-icon" aria-hidden="true"></span>
+            <span>我的云盘</span>
+          </button>
+          <button class="nav-item" data-view="album" type="button">
+            <span class="icon album-icon" aria-hidden="true"></span>
+            <span>相册</span>
+          </button>
+          <button class="nav-item" data-view="quick" type="button">
+            <span class="icon quick-icon" aria-hidden="true"></span>
+            <span>快速访问</span>
+          </button>
+          <button class="nav-item" data-view="nodes" type="button">
+            <span class="icon nodes-icon" aria-hidden="true"></span>
+            <span>存储节点查看</span>
+          </button>
+        </nav>
+
+        <button id="storageCard" class="storage-card" type="button" aria-haspopup="dialog">
+          <div class="storage-row">
+            <span>总容量</span>
+            <span id="storageText" class="muted">--</span>
+          </div>
+          <div class="meter">
+            <div id="storageMeter" class="meter-fill"></div>
+          </div>
+          <div id="nodeSummary" class="node-summary muted">暂无节点信息</div>
+        </button>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <label class="search-box">
+            <span class="icon search-icon" aria-hidden="true"></span>
+            <input id="searchInput" type="search" placeholder="搜索当前视图">
+          </label>
+          <div class="header-actions">
+            <button id="themeToggle" class="circle-button theme-toggle" type="button" title="切换夜间模式">
+              <span class="theme-sun" aria-hidden="true"></span>
+              <span class="theme-moon" aria-hidden="true"></span>
+            </button>
+            <button id="settingsButton" class="circle-button" type="button" title="设置">
+              <span class="icon settings-icon" aria-hidden="true"></span>
+            </button>
+          </div>
+        </header>
+
+        <section class="content-head">
+          <div class="title-block">
+            <div id="viewTitle" class="view-title">我的云盘</div>
+            <div id="breadcrumb" class="breadcrumb"></div>
+          </div>
+          <div id="driveToolbar" class="toolbar">
+            <button id="backButton" class="icon-button" type="button" title="返回">
+              <span class="icon back-icon" aria-hidden="true"></span>
+            </button>
+            <button id="refreshButton" class="icon-button" type="button" title="刷新">
+              <span class="icon refresh-icon" aria-hidden="true"></span>
+            </button>
+            <div class="segmented-control" aria-label="文件视图">
+              <button id="fileListModeButton" class="active" type="button" title="列表视图">
+                <span class="icon list-icon" aria-hidden="true"></span>
+              </button>
+              <button id="fileGridModeButton" type="button" title="网格视图">
+                <span class="icon grid-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+            <button id="uploadButton" class="primary" type="button">
+              <span class="icon upload-icon" aria-hidden="true"></span>
+              <span>上传</span>
+            </button>
+            <button id="mkdirButton" class="secondary" type="button">
+              <span class="icon folder-plus-icon" aria-hidden="true"></span>
+              <span>文件夹</span>
+            </button>
+          </div>
+          <div id="albumToolbar" class="toolbar hidden">
+            <button id="albumBackButton" class="icon-button" type="button" title="返回">
+              <span class="icon back-icon" aria-hidden="true"></span>
+            </button>
+            <button id="albumRefreshButton" class="icon-button" type="button" title="刷新">
+              <span class="icon refresh-icon" aria-hidden="true"></span>
+            </button>
+            <button id="albumUploadButton" class="primary" type="button">
+              <span class="icon upload-icon" aria-hidden="true"></span>
+              <span>上传到相册</span>
+            </button>
+          </div>
+        </section>
+
+        <section id="driveView" class="view">
+          <div id="driveTableWrap" class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>大小</th>
+                  <th>上传时间</th>
+                  <th class="actions-col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="fileRows"></tbody>
+            </table>
+          </div>
+          <div id="fileGrid" class="file-grid hidden"></div>
+          <div id="fileEmpty" class="empty-state hidden">当前目录为空</div>
+        </section>
+
+        <section id="albumView" class="view hidden">
+          <div id="albumGrid" class="album-grid"></div>
+          <div id="albumEmpty" class="empty-state hidden">相册目录为空</div>
+        </section>
+
+        <section id="quickView" class="view hidden">
+          <div class="quick-section">
+            <div class="section-head compact">
+              <h2>常用文件夹</h2>
+            </div>
+            <div id="quickFolders" class="quick-grid"></div>
+          </div>
+          <div class="quick-section">
+            <div class="section-head compact">
+              <h2>最近文件</h2>
+            </div>
+            <div id="quickFiles" class="quick-list"></div>
+          </div>
+          <div id="quickEmpty" class="empty-state hidden">暂无快速访问内容</div>
+        </section>
+
+        <section id="nodesView" class="view hidden">
+          <div class="split-layout">
+            <section class="panel">
+              <div class="section-head">
+                <h2>存储节点</h2>
+                <button id="nodesRefreshButton" class="secondary" type="button">
+                  <span class="icon refresh-icon" aria-hidden="true"></span>
+                  <span>刷新</span>
+                </button>
+              </div>
+              <div id="nodesList" class="node-list"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h2 id="nodeFormTitle">新增节点</h2>
+                <button id="nodeFormReset" class="secondary" type="button">清空</button>
+              </div>
+              <form id="nodeForm" class="form-grid">
+                <input id="nodeId" type="hidden">
+                <label>
+                  名称
+                  <input id="nodeName" type="text" placeholder="节点 1" required>
+                </label>
+                <label>
+                  地址
+                  <input id="nodeUrl" type="url" placeholder="https://node.example.com" required>
+                </label>
+                <label>
+                  Token
+                  <input id="nodeToken" type="password" placeholder="新增或更新时填写">
+                </label>
+                <label>
+                  权重
+                  <input id="nodeWeight" type="number" min="1" step="1" value="1">
+                </label>
+                <label class="checkbox-row">
+                  <input id="nodeEnabled" type="checkbox" checked>
+                  启用节点
+                </label>
+                <button class="primary" type="submit">保存节点</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="settingsView" class="view hidden">
+          <section class="panel settings-panel">
+            <div class="section-head">
+              <h2>连接设置</h2>
+              <button id="openSharedButton" class="secondary" type="button">打开共享页</button>
+            </div>
+            <form id="configForm" class="form-grid">
+              <label>
+                API 基准地址
+                <input id="baseUrlInput" type="url" placeholder="https://cloud.junzhen.qzz.io" required>
+              </label>
+              <button class="primary" type="submit">保存地址</button>
+            </form>
+            <form id="downloadForm" class="form-grid">
+              <label>
+                默认下载路径
+                <div class="path-row">
+                  <input id="downloadDirInput" type="text" placeholder="未设置" readonly>
+                  <button id="selectDownloadDirButton" class="secondary" type="button">选择</button>
+                </div>
+              </label>
+              <div class="button-row">
+                <button class="primary" type="submit">保存路径</button>
+                <button id="clearDownloadDirButton" class="secondary" type="button">清除</button>
+              </div>
+            </form>
+            <form id="loginForm" class="form-grid">
+              <label>
+                访问密码
+                <input id="passwordInput" type="password" placeholder="未设置密码时可留空">
+              </label>
+              <div class="button-row">
+                <button class="primary" type="submit">登录</button>
+                <button id="logoutButton" class="secondary" type="button">登出</button>
+              </div>
+            </form>
+          </section>
+        </section>
+
+        <section class="transfers">
+          <div class="section-head compact">
+            <h2>传输队列</h2>
+            <button id="clearDoneButton" class="secondary" type="button">清理完成项</button>
+          </div>
+          <div id="transferList" class="transfer-list"></div>
+        </section>
+      </main>
+      </div>
+    </div>
+
+    <div id="storagePopover" class="storage-popover hidden" role="dialog" aria-label="容量详情">
+      <div class="popover-head">
+        <strong>容量详情</strong>
+        <button id="storageCloseButton" class="circle-button small" type="button" title="关闭">
+          <span class="icon close-icon" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div id="storageNodeList" class="storage-node-list"></div>
+    </div>
+
+    <div id="authModal" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2>连接到 R2 Cloud Drive</h2>
+        <p class="muted">填写 API 地址和访问密码后即可管理文件。未配置 ACCESS_PASSWORD 时密码留空。</p>
+        <form id="authForm" class="form-grid">
+          <label>
+            API 基准地址
+            <input id="authBaseUrl" type="url" placeholder="https://cloud.junzhen.qzz.io" required>
+          </label>
+          <label>
+            访问密码
+            <input id="authPassword" type="password" placeholder="未设置密码时可留空">
+          </label>
+          <button class="primary" type="submit">连接</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="mediaViewer" class="media-viewer hidden" role="dialog" aria-modal="true" aria-label="媒体预览">
+      <div class="viewer-topbar">
+        <div id="viewerTitle" class="viewer-title ellipsis"></div>
+        <div class="viewer-actions">
+          <button id="viewerDownloadButton" class="primary" type="button">
+            <span class="icon download-icon" aria-hidden="true"></span>
+            <span>下载</span>
+          </button>
+          <button id="viewerCloseButton" class="circle-button" type="button" title="关闭">
+            <span class="icon close-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+      <button id="viewerPrevButton" class="viewer-nav prev" type="button" title="上一张">
+        <span class="icon back-icon" aria-hidden="true"></span>
+      </button>
+      <div id="viewerStage" class="viewer-stage"></div>
+      <button id="viewerNextButton" class="viewer-nav next" type="button" title="下一张">
+        <span class="icon back-icon" aria-hidden="true"></span>
+      </button>
+      <div id="viewerMeta" class="viewer-meta"></div>
+    </div>
+
+    <div id="dialogModal" class="modal-backdrop hidden">
+      <div class="modal dialog-modal" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+        <h2 id="dialogTitle">操作确认</h2>
+        <p id="dialogMessage" class="muted"></p>
+        <form id="dialogForm" class="form-grid">
+          <label id="dialogInputWrap">
+            <span id="dialogInputLabel">名称</span>
+            <input id="dialogInput" type="text" autocomplete="off">
+          </label>
+          <div class="button-row dialog-actions">
+            <button id="dialogCancelButton" class="secondary" type="button">取消</button>
+            <button id="dialogConfirmButton" class="primary" type="submit">确定</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="contextMenu" class="surface-menu context-menu hidden" role="menu"></div>
+    <div id="toast" class="toast hidden"></div>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
