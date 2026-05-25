@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>R2 Cloud Drive</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <div>
+          <h1>相册备份</h1>
+          <p id="statusText">连接 R2 Cloud Drive 后选择照片或视频。</p>
+        </div>
+        <button id="syncButton" type="button">备份</button>
+      </header>
+
+      <section class="panel">
+        <label>
+          API 地址
+          <input id="baseUrlInput" type="url" placeholder="https://cloud.example.com">
+        </label>
+        <label>
+          访问密码
+          <input id="passwordInput" type="password" placeholder="未设置密码可留空">
+        </label>
+        <button id="saveButton" type="button">保存并登录</button>
+      </section>
+
+      <section class="panel">
+        <label>
+          备份到
+          <input id="targetInput" type="text" value="相册/手机相册">
+        </label>
+        <label class="picker">
+          <input id="mediaInput" type="file" accept="image/*,video/*" multiple>
+          <span>选择照片或视频</span>
+        </label>
+        <div id="selectedText" class="muted">尚未选择文件</div>
+      </section>
+
+      <section class="panel">
+        <div class="progress">
+          <div id="progressFill"></div>
+        </div>
+        <div id="logList" class="log"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./mobile.js"></script>
+  </body>
+</html>

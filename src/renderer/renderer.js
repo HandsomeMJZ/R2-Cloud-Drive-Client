@@ -1,7 +1,48 @@
 const api = window.r2Drive;
 const ALBUM_ROOT = '相册';
 const FILE_VIEW_STORAGE_KEY = 'r2drive-file-view';
+const DOWNLOAD_HISTORY_STORAGE_KEY = 'r2drive-download-history';
 const FULL_PREVIEW_LIMIT = 32 * 1024 * 1024;
+const MAX_DOWNLOAD_HISTORY = 100;
+const MATERIAL_ICON_BY_KEY = {
+  'open-icon': 'open_in_new',
+  'download-icon': 'download',
+  'rename-icon': 'drive_file_rename_outline',
+  'trash-icon': 'delete_outline',
+  'copy-icon': 'content_copy',
+  'cut-icon': 'content_cut',
+  'paste-icon': 'content_paste',
+  'upload-icon': 'upload',
+  'folder-plus-icon': 'create_new_folder',
+  'refresh-icon': 'refresh'
+};
+const MATERIAL_ICON_BY_KIND = {
+  folder: 'folder',
+  image: 'image',
+  video: 'movie',
+  audio: 'audio_file',
+  archive: 'folder_zip',
+  pdf: 'picture_as_pdf',
+  document: 'description',
+  sheet: 'table_chart',
+  presentation: 'slideshow',
+  code: 'code',
+  executable: 'terminal',
+  database: 'database',
+  generic: 'insert_drive_file'
+};
+const MATERIAL_ICON_BY_ACTION = {
+  打开: 'open_in_new',
+  下载: 'download',
+  重命名: 'drive_file_rename_outline',
+  复制: 'content_copy',
+  剪切: 'content_cut',
+  删除: 'delete_outline',
+  取消: 'close',
+  定位: 'folder_open',
+  编辑: 'edit',
+  测试: 'network_check'
+};
 let transferRenderQueued = false;
 
 const state = {
@@ -18,13 +59,22 @@ const state = {
   quickFiles: [],
   storage: null,
   nodes: [],
+  backup: {
+    jobs: [],
+    intervalMinutes: 15,
+    autoStart: false,
+    statuses: new Map()
+  },
   transfers: new Map(),
+  downloadHistory: [],
   previewCache: new Map(),
   fullPreviewCache: new Map(),
   search: '',
   contextElement: null,
   dialogResolve: null,
   busyCount: 0,
+  clipboard: null, // { items: [...], action: 'copy'|'cut', sourcePath: '' }
+  selectedItems: new Map(), // name -> { name, type }
   viewer: {
     items: [],
     index: 0,
@@ -43,6 +93,9 @@ document.addEventListener('DOMContentLoaded', () => {
 function cacheElements() {
   Object.assign(els, {
     titlebarDrag: document.querySelector('#titlebarDrag'),
+    titlebarMark: document.querySelector('#titlebarMark'),
+    brandMark: document.querySelector('#brandMark'),
+    customBrandStyle: document.querySelector('#customBrandStyle'),
     windowMinimizeButton: document.querySelector('#windowMinimizeButton'),
     windowMaximizeButton: document.querySelector('#windowMaximizeButton'),
     windowCloseButton: document.querySelector('#windowCloseButton'),
@@ -69,6 +122,8 @@ function cacheElements() {
     driveView: document.querySelector('#driveView'),
     albumView: document.querySelector('#albumView'),
     quickView: document.querySelector('#quickView'),
+    backupView: document.querySelector('#backupView'),
+    transfersView: document.querySelector('#transfersView'),
     nodesView: document.querySelector('#nodesView'),
     settingsView: document.querySelector('#settingsView'),
     driveTableWrap: document.querySelector('#driveTableWrap'),
@@ -80,19 +135,42 @@ function cacheElements() {
     quickFolders: document.querySelector('#quickFolders'),
     quickFiles: document.querySelector('#quickFiles'),
     quickEmpty: document.querySelector('#quickEmpty'),
+    backupAutoStart: document.querySelector('#backupAutoStart'),
+    backupIntervalInput: document.querySelector('#backupIntervalInput'),
+    backupSaveSettingsButton: document.querySelector('#backupSaveSettingsButton'),
+    backupSelectFolderButton: document.querySelector('#backupSelectFolderButton'),
+    backupRunAllButton: document.querySelector('#backupRunAllButton'),
+    backupJobList: document.querySelector('#backupJobList'),
+    backupEmpty: document.querySelector('#backupEmpty'),
     backButton: document.querySelector('#backButton'),
     refreshButton: document.querySelector('#refreshButton'),
     uploadButton: document.querySelector('#uploadButton'),
     mkdirButton: document.querySelector('#mkdirButton'),
+    pasteButton: document.querySelector('#pasteButton'),
+    actionBar: document.querySelector('#actionBar'),
+    actionBarCount: document.querySelector('#actionBarCount'),
+    copySelectedButton: document.querySelector('#copySelectedButton'),
+    cutSelectedButton: document.querySelector('#cutSelectedButton'),
+    renameSelectedButton: document.querySelector('#renameSelectedButton'),
+    downloadSelectedButton: document.querySelector('#downloadSelectedButton'),
+    deleteSelectedButton: document.querySelector('#deleteSelectedButton'),
     albumBackButton: document.querySelector('#albumBackButton'),
     albumRefreshButton: document.querySelector('#albumRefreshButton'),
     albumUploadButton: document.querySelector('#albumUploadButton'),
+    albumBackupButton: document.querySelector('#albumBackupButton'),
     configForm: document.querySelector('#configForm'),
     baseUrlInput: document.querySelector('#baseUrlInput'),
+    brandForm: document.querySelector('#brandForm'),
+    brandHtmlInput: document.querySelector('#brandHtmlInput'),
+    brandCssInput: document.querySelector('#brandCssInput'),
     downloadForm: document.querySelector('#downloadForm'),
     downloadDirInput: document.querySelector('#downloadDirInput'),
     selectDownloadDirButton: document.querySelector('#selectDownloadDirButton'),
     clearDownloadDirButton: document.querySelector('#clearDownloadDirButton'),
+    transferDownloadForm: document.querySelector('#transferDownloadForm'),
+    transferDownloadDirInput: document.querySelector('#transferDownloadDirInput'),
+    transferSelectDownloadDirButton: document.querySelector('#transferSelectDownloadDirButton'),
+    transferClearDownloadDirButton: document.querySelector('#transferClearDownloadDirButton'),
     loginForm: document.querySelector('#loginForm'),
     passwordInput: document.querySelector('#passwordInput'),
     logoutButton: document.querySelector('#logoutButton'),
@@ -122,8 +200,15 @@ function cacheElements() {
     dialogConfirmButton: document.querySelector('#dialogConfirmButton'),
     contextMenu: document.querySelector('#contextMenu'),
     toast: document.querySelector('#toast'),
-    transferList: document.querySelector('#transferList'),
-    clearDoneButton: document.querySelector('#clearDoneButton'),
+    transferBubble: document.querySelector('#transferBubble'),
+    transferBubbleCount: document.querySelector('#transferBubbleCount'),
+    transferBubbleProgress: document.querySelector('#transferBubbleProgress'),
+    uploadTransferList: document.querySelector('#uploadTransferList'),
+    downloadTransferList: document.querySelector('#downloadTransferList'),
+    downloadHistoryList: document.querySelector('#downloadHistoryList'),
+    clearDoneUploadsButton: document.querySelector('#clearDoneUploadsButton'),
+    clearDoneDownloadsButton: document.querySelector('#clearDoneDownloadsButton'),
+    clearDownloadHistoryButton: document.querySelector('#clearDownloadHistoryButton'),
     nodesRefreshButton: document.querySelector('#nodesRefreshButton'),
     nodesList: document.querySelector('#nodesList'),
     nodeForm: document.querySelector('#nodeForm'),
@@ -133,12 +218,13 @@ function cacheElements() {
     nodeName: document.querySelector('#nodeName'),
     nodeUrl: document.querySelector('#nodeUrl'),
     nodeToken: document.querySelector('#nodeToken'),
-    nodeWeight: document.querySelector('#nodeWeight'),
     nodeEnabled: document.querySelector('#nodeEnabled')
   });
 }
 
 function bindEvents() {
+  setupAboutPanel();
+
   els.windowMinimizeButton.addEventListener('click', () => api.minimizeWindow());
   els.windowMaximizeButton.addEventListener('click', toggleWindowMaximize);
   els.windowCloseButton.addEventListener('click', () => api.closeWindow());
@@ -170,10 +256,20 @@ function bindEvents() {
   els.fileGridModeButton.addEventListener('click', () => setFileViewMode('grid'));
   els.uploadButton.addEventListener('click', uploadFiles);
   els.mkdirButton.addEventListener('click', createFolder);
+  els.pasteButton.addEventListener('click', pasteFromClipboard);
+  els.copySelectedButton.addEventListener('click', () => copySelectedToClipboard('copy'));
+  els.cutSelectedButton.addEventListener('click', () => copySelectedToClipboard('cut'));
+  els.renameSelectedButton.addEventListener('click', renameSelectedItem);
+  els.downloadSelectedButton.addEventListener('click', downloadSelectedItems);
+  els.deleteSelectedButton.addEventListener('click', deleteSelectedItems);
 
   els.albumBackButton.addEventListener('click', () => navigateAlbum(albumParentPath(state.albumPath)));
   els.albumRefreshButton.addEventListener('click', refreshCurrentView);
   els.albumUploadButton.addEventListener('click', uploadFiles);
+  els.albumBackupButton.addEventListener('click', selectAlbumBackupFolder);
+  els.backupSaveSettingsButton.addEventListener('click', saveBackupSettings);
+  els.backupSelectFolderButton.addEventListener('click', selectBackupFolder);
+  els.backupRunAllButton.addEventListener('click', () => runBackupNow(''));
   els.driveView.addEventListener('contextmenu', showViewContextMenu);
   els.albumView.addEventListener('contextmenu', showViewContextMenu);
 
@@ -194,7 +290,10 @@ function bindEvents() {
     }
   });
 
-  els.clearDoneButton.addEventListener('click', clearDoneTransfers);
+  els.transferBubble.addEventListener('click', () => setView('transfers'));
+  els.clearDoneUploadsButton.addEventListener('click', () => clearDoneTransfers('upload'));
+  els.clearDoneDownloadsButton.addEventListener('click', () => clearDoneTransfers('download'));
+  els.clearDownloadHistoryButton.addEventListener('click', clearDownloadHistory);
   els.dialogCancelButton.addEventListener('click', () => closeDialog(null));
   els.dialogModal.addEventListener('click', (event) => {
     if (event.target === els.dialogModal) {
@@ -227,12 +326,23 @@ function bindEvents() {
     await saveBaseUrl(els.baseUrlInput.value);
   });
 
+  els.brandForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveBrandCustomization();
+  });
+
   els.downloadForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     await saveDownloadDir(els.downloadDirInput.value);
   });
   els.selectDownloadDirButton.addEventListener('click', selectDownloadDir);
   els.clearDownloadDirButton.addEventListener('click', clearDownloadDir);
+  els.transferDownloadForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveDownloadDir(els.transferDownloadDirInput.value);
+  });
+  els.transferSelectDownloadDirButton.addEventListener('click', selectDownloadDir);
+  els.transferClearDownloadDirButton.addEventListener('click', clearDownloadDir);
 
   els.loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -262,21 +372,36 @@ function bindEvents() {
 
   api.onTransfer((payload) => {
     const current = state.transfers.get(payload.id) || { createdAt: Date.now() };
-    state.transfers.set(payload.id, {
+    const nextTransfer = {
       ...current,
       ...payload,
       updatedAt: Date.now()
-    });
+    };
+    state.transfers.set(payload.id, nextTransfer);
+    if (nextTransfer.type === 'download' && nextTransfer.status === 'done' && nextTransfer.localPath) {
+      persistDownloadedFile(nextTransfer);
+    }
+    if (nextTransfer.type === 'upload' && nextTransfer.status === 'done') {
+      scheduleUploadListRefresh();
+    }
     scheduleRenderTransfers();
+  });
+
+  api.onBackup((payload) => {
+    state.backup.statuses.set(payload.jobId, payload);
+    renderBackup();
   });
 }
 
 async function init() {
   applySavedTheme();
+  loadDownloadHistory();
   document.body.dataset.view = state.view;
   updateFileViewModeControls();
   renderTransfers();
+  updateActionBar();
   state.config = await api.getConfig();
+  await loadBackupConfig();
   renderConfig();
 
   if (!state.config.baseUrl) {
@@ -284,7 +409,7 @@ async function init() {
     return;
   }
 
-  await Promise.allSettled([loadStorage(), loadFiles(''), loadQuick()]);
+  await Promise.allSettled([loadStorage(), loadFiles(''), loadQuick(), refreshClipboardState()]);
 }
 
 function applySavedTheme() {
@@ -297,13 +422,58 @@ function renderConfig() {
   els.baseUrlInput.value = baseUrl;
   els.authBaseUrl.value = baseUrl;
   els.downloadDirInput.value = state.config?.downloadDir || '';
-  els.serverStatus.textContent = baseUrl || '未连接';
+  els.transferDownloadDirInput.value = state.config?.downloadDir || '';
+  els.brandHtmlInput.value = state.config?.customBrandHtml || '';
+  els.brandCssInput.value = state.config?.customBrandCss || '';
+  els.serverStatus.textContent = displayBaseUrlHost(baseUrl) || '未连接';
+  applyBrandCustomization();
 }
 
 async function saveBaseUrl(baseUrl) {
   state.config = await api.setConfig({ baseUrl });
   renderConfig();
   toast('地址已保存');
+}
+
+async function saveBrandCustomization() {
+  state.config = await api.setConfig({
+    customBrandHtml: els.brandHtmlInput.value,
+    customBrandCss: els.brandCssInput.value
+  });
+  renderConfig();
+  toast('外观已保存');
+}
+
+function applyBrandCustomization() {
+  const customHtml = state.config?.customBrandHtml || '';
+  const customCss = state.config?.customBrandCss || '';
+  const brandHtml = customHtml.trim() || 'R2';
+  els.brandMark.innerHTML = brandHtml;
+  els.titlebarMark.innerHTML = brandHtml;
+  els.customBrandStyle.textContent = customCss;
+}
+
+function setupAboutPanel() {
+  const settingsPanel = document.querySelector('#settingsView .settings-panel');
+  if (!settingsPanel || settingsPanel.querySelector('.about-panel')) {
+    return;
+  }
+
+  const section = document.createElement('section');
+  section.className = 'about-panel';
+  section.setAttribute('aria-label', '关于');
+  section.innerHTML = [
+    '<div class="section-head"><h2>关于</h2></div>',
+    '<div class="about-profile">',
+    '<div class="about-avatar" aria-hidden="true"><img src="https://q.qlogo.cn/headimg_dl?dst_uin=1792063643&spec=640&img_type=jpg" alt="头像" style="width:100%; height:100%; object-fit:cover;"></div>',
+    '<div class="about-copy">',
+    '<strong class="about-name">俊臻是真俊</strong>',
+    '<span class="about-signature">Hello帅1,点个star支持一下呗⬇️</span>',
+    '<a class="about-github" href="https://github.com/HandsomeMJZ" target="_blank" rel="noreferrer">GitHub: HandsomeMJZ</a>',
+    '</div>',
+    '</div>'
+  ].join('');
+  settingsPanel.append(section);
 }
 
 async function selectDownloadDir() {
@@ -313,6 +483,7 @@ async function selectDownloadDir() {
       return;
     }
     els.downloadDirInput.value = result.filePath;
+    els.transferDownloadDirInput.value = result.filePath;
     await saveDownloadDir(result.filePath);
   });
 }
@@ -325,6 +496,7 @@ async function saveDownloadDir(downloadDir) {
 
 async function clearDownloadDir() {
   els.downloadDirInput.value = '';
+  els.transferDownloadDirInput.value = '';
   await saveDownloadDir('');
 }
 
@@ -363,6 +535,8 @@ function setView(view) {
   els.driveView.classList.toggle('hidden', view !== 'drive');
   els.albumView.classList.toggle('hidden', view !== 'album');
   els.quickView.classList.toggle('hidden', view !== 'quick');
+  els.backupView.classList.toggle('hidden', view !== 'backup');
+  els.transfersView.classList.toggle('hidden', view !== 'transfers');
   els.nodesView.classList.toggle('hidden', view !== 'nodes');
   els.settingsView.classList.toggle('hidden', view !== 'settings');
   els.driveToolbar.classList.toggle('hidden', view !== 'drive');
@@ -372,10 +546,14 @@ function setView(view) {
     drive: '我的云盘',
     album: '相册',
     quick: '快速访问',
+    transfers: '传输列表',
     nodes: '存储节点查看',
     settings: '设置'
   };
   els.viewTitle.textContent = titles[view];
+  if (view === 'backup') {
+    els.viewTitle.textContent = '自动备份';
+  }
   renderBreadcrumb();
   renderCurrentView();
 
@@ -384,6 +562,12 @@ function setView(view) {
   }
   if (view === 'quick') {
     loadQuick();
+  }
+  if (view === 'backup') {
+    loadBackupConfig();
+  }
+  if (view === 'transfers') {
+    renderTransferView();
   }
   if (view === 'nodes') {
     loadNodes();
@@ -397,6 +581,10 @@ function refreshCurrentView() {
     loadAlbum(state.albumPath);
   } else if (state.view === 'quick') {
     loadQuick();
+  } else if (state.view === 'backup') {
+    loadBackupConfig();
+  } else if (state.view === 'transfers') {
+    renderTransferView();
   } else if (state.view === 'nodes') {
     loadNodes();
   }
@@ -410,6 +598,10 @@ function renderCurrentView() {
     renderAlbum();
   } else if (state.view === 'quick') {
     renderQuick();
+  } else if (state.view === 'backup') {
+    renderBackup();
+  } else if (state.view === 'transfers') {
+    renderTransferView();
   }
 }
 
@@ -419,8 +611,10 @@ async function loadFiles(remotePath) {
     state.currentPath = remotePath || '';
     state.folders = data.folders || [];
     state.files = hideKeepFiles(data.files || []);
+    state.selectedItems.clear();
     renderFiles();
     renderBreadcrumb();
+    updateActionBar();
     loadStorage();
   });
 }
@@ -449,6 +643,18 @@ async function loadQuick() {
   });
 }
 
+async function loadBackupConfig() {
+  try {
+    const config = await api.getBackupConfig();
+    state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
+    state.backup.intervalMinutes = Number(config.intervalMinutes) || 15;
+    state.backup.autoStart = Boolean(config.autoStart);
+    renderBackup();
+  } catch (error) {
+    handleError(error);
+  }
+}
+
 async function loadStorage() {
   try {
     state.storage = await api.storage();
@@ -462,11 +668,128 @@ async function loadStorage() {
 
 async function loadNodes() {
   await runTask(async () => {
-    const data = await api.nodesList();
-    state.nodes = data.nodes || [];
+    const [nodesResult, storageResult] = await Promise.allSettled([
+      api.nodesList(),
+      api.storage()
+    ]);
+    const nodeConfigs = nodesResult.status === 'fulfilled' ? nodesResult.value.nodes || [] : [];
+    if (storageResult.status === 'fulfilled') {
+      state.storage = storageResult.value;
+      renderStorage();
+    }
+    state.nodes = buildNodeRows(nodeConfigs, state.storage);
     renderNodes();
   });
 }
+
+// ── Clipboard ──────────────────────────────────────────────
+
+async function copySelectedToClipboard(action) {
+  const items = selectedItems();
+  if (!items.length) {
+    return;
+  }
+
+  await setClipboardItems(items, action, state.currentPath);
+  toast(action === 'copy'
+    ? `已复制 ${items.length} 项，请进入目标文件夹后粘贴`
+    : `已剪切 ${items.length} 项，请进入目标文件夹后粘贴`);
+}
+
+async function copyToClipboard(item, parentPath, action) {
+  const items = [{
+    name: item.name,
+    type: item.type === 'folder' ? 'folder' : 'file'
+  }];
+  await setClipboardItems(items, action, parentPath);
+  toast(action === 'copy' ? '已复制到剪贴板' : '已剪切到剪贴板');
+}
+
+async function setClipboardItems(items, action, parentPath) {
+  state.clipboard = { items, action, sourcePath: parentPath };
+  updateActionBar();
+
+  try {
+    await api.clipboardSet(items.map((entry) => entry.name), action, parentPath);
+  } catch (error) {
+    console.warn('Clipboard API unavailable:', error);
+  }
+}
+
+async function pasteFromClipboard() {
+  if (state.view !== 'drive') {
+    setView('drive');
+  }
+
+  let clipData;
+  try {
+    clipData = await api.clipboardGet();
+  } catch (error) {
+    // clipboard API may not be available (e.g. server doesn't support it)
+  }
+
+  const items = mergeClipboardItems(clipData, state.clipboard);
+  const action = clipData?.action || state.clipboard?.action || 'copy';
+  const sourcePath = clipData?.sourcePath ?? state.clipboard?.sourcePath ?? '';
+  const targetPath = state.currentPath;
+  const itemNames = clipboardPasteItemNames(items);
+
+  if (!itemNames.length) {
+    toast('剪贴板为空');
+    return;
+  }
+
+  if (action === 'cut' && sourcePath === targetPath) {
+    toast('源路径和目标路径相同，无需操作');
+    return;
+  }
+
+  await runTask(async () => {
+    const result = await api.clipboardPaste({
+      action,
+      items: itemNames,
+      sourcePath,
+      targetPath
+    });
+    const failed = clipboardPasteFailures(result);
+    const done = Math.max(0, itemNames.length - failed.length);
+
+    if (action === 'cut' && !failed.length) {
+      await api.clipboardDelete().catch(() => {});
+      state.clipboard = null;
+      updateActionBar();
+    }
+
+    if (failed.length) {
+      toast(`${action === 'cut' ? '移动' : '复制'}完成 ${done}/${itemNames.length} 项，${failed.length} 项失败`);
+    } else if (action === 'cut') {
+      toast(`已移动 ${done} 个项目`);
+    } else if (done) {
+      toast(`已复制 ${done} 个项目`);
+    }
+
+    await refreshAfterMutation();
+  });
+}
+
+async function refreshClipboardState() {
+  try {
+    const clipData = await api.clipboardGet();
+    if (Array.isArray(clipData?.items) && clipData.items.length) {
+      state.clipboard = {
+        items: clipData.items,
+        action: clipData.action || 'copy',
+        sourcePath: clipData.sourcePath || ''
+      };
+    }
+  } catch {
+    // Older server builds may not expose the clipboard API.
+  } finally {
+    updateActionBar();
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────
 
 function renderFiles() {
   els.fileRows.replaceChildren();
@@ -483,7 +806,9 @@ function renderFiles() {
     onFolder: (name) => navigateFiles(joinRemote(state.currentPath, name)),
     onDownload: (file) => downloadFile(joinRemote(state.currentPath, file.name), file.name),
     onRename: (item) => renameItem(item, state.currentPath),
-    onDelete: (item) => deleteItem(item, state.currentPath)
+    onDelete: (item) => deleteItem(item, state.currentPath),
+    onCopy: (item) => copyToClipboard(item, state.currentPath, 'copy'),
+    onCut: (item) => copyToClipboard(item, state.currentPath, 'cut')
   });
 
   renderFileCards({
@@ -494,7 +819,9 @@ function renderFiles() {
     onFolder: (name) => navigateFiles(joinRemote(state.currentPath, name)),
     onDownload: (file) => downloadFile(joinRemote(state.currentPath, file.name), file.name),
     onRename: (item) => renameItem(item, state.currentPath),
-    onDelete: (item) => deleteItem(item, state.currentPath)
+    onDelete: (item) => deleteItem(item, state.currentPath),
+    onCopy: (item) => copyToClipboard(item, state.currentPath, 'copy'),
+    onCut: (item) => copyToClipboard(item, state.currentPath, 'cut')
   });
 
   els.fileEmpty.classList.toggle('hidden', hasItems);
@@ -889,6 +1216,83 @@ function makeQuickItem(item) {
   return row;
 }
 
+function renderBackup() {
+  if (!els.backupJobList) {
+    return;
+  }
+
+  els.backupIntervalInput.value = state.backup.intervalMinutes || 15;
+  els.backupAutoStart.checked = Boolean(state.backup.autoStart);
+  els.backupJobList.replaceChildren();
+
+  const jobs = filterNamed(state.backup.jobs);
+  for (const job of jobs) {
+    els.backupJobList.append(makeBackupJobItem(job));
+  }
+
+  els.backupEmpty.classList.toggle('hidden', jobs.length > 0);
+}
+
+function makeBackupJobItem(job) {
+  const status = state.backup.statuses.get(job.id);
+  const item = document.createElement('article');
+  item.className = 'backup-job';
+  item.classList.toggle('is-running', status?.status === 'running');
+
+  const icon = makeFileBadge({ type: 'folder', name: job.name });
+
+  const content = document.createElement('div');
+  content.className = 'backup-job-content';
+
+  const title = document.createElement('div');
+  title.className = 'backup-job-title';
+  const name = document.createElement('strong');
+  name.textContent = job.name || job.localPath;
+  name.title = job.localPath;
+  const badge = document.createElement('span');
+  badge.className = `badge ${job.enabled === false ? 'off' : ''}`;
+  badge.textContent = job.kind === 'album' ? '相册' : (job.enabled === false ? '已停用' : '已启用');
+  const stateBadge = document.createElement('span');
+  stateBadge.className = `badge ${job.enabled === false ? 'off' : ''}`;
+  stateBadge.textContent = job.enabled === false ? '已停用' : '已启用';
+  title.append(name, badge, stateBadge);
+
+  const paths = document.createElement('div');
+  paths.className = 'backup-job-paths muted';
+  paths.textContent = `${job.localPath} -> /${job.remotePath}`;
+  paths.title = paths.textContent;
+
+  const meta = document.createElement('div');
+  meta.className = 'backup-job-meta muted';
+  const stats = status?.stats;
+  const statText = stats
+    ? `扫描 ${stats.scanned || 0}，上传 ${stats.uploaded || 0}，跳过 ${stats.skipped || 0}，失败 ${stats.failed || 0}`
+    : (job.lastMessage || '等待首次备份');
+  const timeText = job.lastRunAt ? `上次：${formatDate(job.lastRunAt)}` : '尚未运行';
+  meta.textContent = status?.phase ? `${status.phase} · ${statText}` : `${timeText} · ${statText}`;
+
+  if (status?.fileName) {
+    const file = document.createElement('div');
+    file.className = 'backup-job-file muted';
+    file.textContent = status.fileName;
+    file.title = status.remotePath || status.fileName;
+    content.append(title, paths, meta, file);
+  } else {
+    content.append(title, paths, meta);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'backup-job-actions';
+  actions.append(
+    actionButton('立即备份', () => runBackupNow(job.id)),
+    actionButton(job.enabled === false ? '启用' : '停用', () => toggleBackupJob(job)),
+    actionButton('删除', () => removeBackupJob(job), 'danger')
+  );
+
+  item.append(icon, content, actions);
+  return item;
+}
+
 function renderFileCards(options) {
   for (const folderName of options.folders) {
     options.container.append(makeFileCard({
@@ -897,7 +1301,9 @@ function renderFileCards(options) {
       parentPath: options.parentPath,
       onOpen: () => options.onFolder(folderName),
       onRename: options.onRename,
-      onDelete: options.onDelete
+      onDelete: options.onDelete,
+      onCopy: options.onCopy,
+      onCut: options.onCut
     }));
   }
 
@@ -909,7 +1315,9 @@ function renderFileCards(options) {
       onOpen: () => options.onDownload(file),
       onDownload: () => options.onDownload(file),
       onRename: options.onRename,
-      onDelete: options.onDelete
+      onDelete: options.onDelete,
+      onCopy: options.onCopy,
+      onCut: options.onCut
     }));
   }
 }
@@ -918,10 +1326,16 @@ function makeFileCard(options) {
   const card = document.createElement('article');
   card.className = 'file-card';
   card.tabIndex = 0;
-  card.addEventListener('dblclick', options.onOpen);
+  card.classList.toggle('selected', isSelected(options.item));
+  card.addEventListener('click', (event) => {
+    handleDriveItemClick(event, options.item, card, options.onOpen);
+  });
   card.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       options.onOpen();
+    } else if (event.key === ' ') {
+      event.preventDefault();
+      toggleSelection(options.item, card);
     }
   });
   card.addEventListener('contextmenu', (event) => {
@@ -938,7 +1352,13 @@ function makeFileCard(options) {
     });
   });
 
+  const row = document.createElement('div');
+  row.className = 'file-card-row';
+
   const badge = makeFileBadge(options.item);
+
+  const textCol = document.createElement('div');
+  textCol.className = 'file-card-text';
 
   const name = document.createElement('strong');
   name.className = 'file-card-name';
@@ -949,16 +1369,46 @@ function makeFileCard(options) {
   meta.className = 'muted';
   meta.textContent = options.meta;
 
-  const actions = document.createElement('div');
-  actions.className = 'file-card-actions';
-  actions.append(
-    actionButton(options.item.type === 'folder' ? '打开' : '下载', options.item.type === 'folder' ? options.onOpen : options.onDownload),
-    actionButton('重命名', () => options.onRename(options.item)),
-    actionButton('删除', () => options.onDelete(options.item), 'danger')
-  );
+  textCol.append(name, meta);
 
-  card.append(badge, name, meta, actions);
+  // Three-dot menu button (shown on hover)
+  const menuBtn = document.createElement('button');
+  menuBtn.type = 'button';
+  menuBtn.className = 'card-menu-btn';
+  menuBtn.setAttribute('aria-label', '更多操作');
+  menuBtn.append(materialIcon('more_vert'));
+  menuBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    hideContextMenu();
+    showContextMenu(event, buildGridCardActions(options));
+  });
+
+  row.append(badge, textCol, menuBtn);
+  card.append(row);
   return card;
+}
+
+function buildGridCardActions(options) {
+  const isFolder = options.item.type === 'folder';
+  const actions = [];
+
+  if (isFolder) {
+    actions.push(menuAction('打开', 'open-icon', options.onOpen));
+  } else {
+    actions.push(menuAction('下载', 'download-icon', options.onDownload));
+  }
+  actions.push(menuSeparator());
+  actions.push(menuAction('重命名', 'rename-icon', () => options.onRename(options.item)));
+  if (options.onCopy) {
+    actions.push(menuAction('复制', 'copy-icon', () => options.onCopy(options.item)));
+  }
+  if (options.onCut) {
+    actions.push(menuAction('剪切', 'cut-icon', () => options.onCut(options.item)));
+  }
+  actions.push(menuSeparator());
+  actions.push(menuAction('删除', 'trash-icon', () => options.onDelete(options.item), 'danger'));
+
+  return actions;
 }
 
 function renderRows(options) {
@@ -970,7 +1420,9 @@ function renderRows(options) {
       parentPath: options.parentPath,
       onOpen: () => options.onFolder(folderName),
       onRename: options.onRename,
-      onDelete: options.onDelete
+      onDelete: options.onDelete,
+      onCopy: options.onCopy,
+      onCut: options.onCut
     });
     options.tbody.append(row);
   }
@@ -984,7 +1436,9 @@ function renderRows(options) {
       onOpen: () => options.onDownload(file),
       onDownload: () => options.onDownload(file),
       onRename: options.onRename,
-      onDelete: options.onDelete
+      onDelete: options.onDelete,
+      onCopy: options.onCopy,
+      onCut: options.onCut
     });
     options.tbody.append(row);
   }
@@ -992,7 +1446,10 @@ function renderRows(options) {
 
 function makeRow(options) {
   const row = document.createElement('tr');
-  row.addEventListener('dblclick', options.onOpen);
+  row.classList.toggle('selected', isSelected(options.item));
+  row.addEventListener('click', (event) => {
+    handleDriveItemClick(event, options.item, row, options.onOpen);
+  });
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1035,6 +1492,12 @@ function makeRow(options) {
   }
 
   actions.append(actionButton('重命名', () => options.onRename(options.item)));
+  if (options.onCopy) {
+    actions.append(actionButton('复制', () => options.onCopy(options.item)));
+  }
+  if (options.onCut) {
+    actions.append(actionButton('剪切', () => options.onCut(options.item)));
+  }
   actions.append(actionButton('删除', () => options.onDelete(options.item), 'danger'));
 
   actionsCell.append(actions);
@@ -1046,7 +1509,13 @@ function actionButton(label, handler, variant = 'secondary') {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = variant === 'danger' ? 'danger' : 'secondary';
-  button.textContent = label;
+  const iconName = MATERIAL_ICON_BY_ACTION[label];
+  if (iconName) {
+    button.append(materialIcon(iconName));
+  }
+  const text = document.createElement('span');
+  text.textContent = label;
+  button.append(text);
   button.addEventListener('click', (event) => {
     event.stopPropagation();
     handler();
@@ -1054,11 +1523,113 @@ function actionButton(label, handler, variant = 'secondary') {
   return button;
 }
 
+function selectedItems() {
+  return [...state.selectedItems.values()];
+}
+
+function selectedItemKey(item) {
+  return `${item?.type || 'file'}:${item?.name || ''}`;
+}
+
+function isSelected(item) {
+  return state.selectedItems.has(selectedItemKey(item));
+}
+
+function toggleSelection(item, element) {
+  const key = selectedItemKey(item);
+  const selected = !state.selectedItems.has(key);
+  if (selected) {
+    state.selectedItems.set(key, {
+      name: item.name,
+      type: item.type === 'folder' ? 'folder' : 'file'
+    });
+  } else {
+    state.selectedItems.delete(key);
+  }
+  element?.classList.toggle('selected', selected);
+  updateActionBar();
+}
+
+function handleDriveItemClick(event, item, element, onOpen) {
+  if (event.target.closest('button')) {
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    toggleSelection(item, element);
+    return;
+  }
+  onOpen();
+}
+
+function updateActionBar() {
+  const count = state.selectedItems.size;
+  const clipCount = Array.isArray(state.clipboard?.items) ? state.clipboard.items.length : 0;
+  const canPaste = state.view === 'drive' && clipCount > 0;
+
+  els.actionBarCount.textContent = count
+    ? `已选中 ${count} 项`
+    : clipCount
+      ? `${state.clipboard.action === 'cut' ? '剪切' : '复制'} ${clipCount} 项待粘贴`
+      : '未选中';
+  els.copySelectedButton.disabled = count === 0;
+  els.cutSelectedButton.disabled = count === 0;
+  els.renameSelectedButton.disabled = count !== 1;
+  els.downloadSelectedButton.disabled = count === 0;
+  els.deleteSelectedButton.disabled = count === 0;
+  els.pasteButton.disabled = !canPaste;
+}
+
+async function renameSelectedItem() {
+  const [item] = selectedItems();
+  if (!item) {
+    return;
+  }
+  await renameItem(item, state.currentPath);
+}
+
+async function downloadSelectedItems() {
+  const files = selectedItems().filter((item) => item.type !== 'folder');
+  if (!files.length) {
+    toast('请选择要下载的文件');
+    return;
+  }
+  for (const item of files) {
+    await downloadFile(joinRemote(state.currentPath, item.name), item.name);
+  }
+}
+
+async function deleteSelectedItems() {
+  const items = selectedItems();
+  if (!items.length) {
+    return;
+  }
+  const ok = await openConfirmDialog({
+    title: '删除项目',
+    message: `确定删除选中的 ${items.length} 个项目吗？此操作无法在客户端撤销。`,
+    confirmText: '删除',
+    danger: true
+  });
+  if (!ok) {
+    return;
+  }
+
+  await runTask(async () => {
+    for (const item of items) {
+      await api.deletePath(joinRemote(state.currentPath, item.name));
+    }
+    state.selectedItems.clear();
+    await refreshAfterMutation();
+    updateActionBar();
+    toast('已删除');
+  });
+}
+
 function makeFileBadge(item) {
   const badge = document.createElement('span');
   const kind = fileKind(item);
   badge.className = `file-badge file-kind-${kind}`;
   badge.setAttribute('aria-hidden', 'true');
+  badge.append(materialIcon(MATERIAL_ICON_BY_KIND[kind] || MATERIAL_ICON_BY_KIND.generic));
   return badge;
 }
 
@@ -1080,6 +1651,9 @@ function fileKind(item) {
   if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'].includes(ext)) {
     return 'archive';
   }
+  if (['exe', 'msi', 'bat', 'cmd', 'com', 'appx', 'appxbundle', 'dmg', 'deb', 'rpm'].includes(ext)) {
+    return 'executable';
+  }
   if (ext === 'pdf') {
     return 'pdf';
   }
@@ -1089,10 +1663,28 @@ function fileKind(item) {
   if (['xls', 'xlsx', 'csv'].includes(ext)) {
     return 'sheet';
   }
+  if (['ppt', 'pptx', 'key'].includes(ext)) {
+    return 'presentation';
+  }
+  if (['db', 'sqlite', 'sql', 'mdb'].includes(ext)) {
+    return 'database';
+  }
   if (['js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'yml', 'yaml', 'sh', 'ps1', 'py', 'go', 'rs', 'java', 'cpp', 'c'].includes(ext)) {
     return 'code';
   }
   return 'generic';
+}
+
+function materialIcon(name) {
+  const icon = document.createElement('span');
+  icon.className = 'material-icons-round';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = name;
+  return icon;
+}
+
+function materialIconName(key) {
+  return MATERIAL_ICON_BY_KEY[key] || key || 'more_horiz';
 }
 
 function menuAction(label, icon, handler, variant = '') {
@@ -1134,19 +1726,25 @@ function albumFileContextActions({ file, parentPath, onOpen }) {
 }
 
 function showItemContextMenu(event, options) {
-  const actions = options.item.type === 'folder'
-    ? [
-        menuAction('打开', 'open-icon', options.onOpen),
-        menuSeparator(),
-        menuAction('重命名', 'rename-icon', options.onRename),
-        menuAction('删除', 'trash-icon', options.onDelete, 'danger')
-      ]
-    : [
-        menuAction('下载', 'download-icon', options.onDownload),
-        menuSeparator(),
-        menuAction('重命名', 'rename-icon', options.onRename),
-        menuAction('删除', 'trash-icon', options.onDelete, 'danger')
-      ];
+  const isFolder = options.item.type === 'folder';
+  const actions = [];
+
+  if (isFolder) {
+    actions.push(menuAction('打开', 'open-icon', options.onOpen));
+  } else {
+    actions.push(menuAction('下载', 'download-icon', options.onDownload));
+  }
+  actions.push(menuSeparator());
+  actions.push(menuAction('重命名', 'rename-icon', options.onRename));
+
+  if (state.view === 'drive') {
+    actions.push(menuAction('复制', 'copy-icon', () => copyToClipboard(options.item, options.parentPath, 'copy')));
+    actions.push(menuAction('剪切', 'cut-icon', () => copyToClipboard(options.item, options.parentPath, 'cut')));
+  }
+
+  actions.push(menuSeparator());
+  actions.push(menuAction('删除', 'trash-icon', options.onDelete, 'danger'));
+
   showContextMenu(event, actions);
 }
 
@@ -1161,12 +1759,24 @@ function showViewContextMenu(event) {
 
   event.preventDefault();
   clearContextElement();
-  showContextMenu(event, [
+
+  const menuItems = [
     menuAction('上传文件', 'upload-icon', uploadFiles),
     menuAction('新建文件夹', 'folder-plus-icon', createFolder),
-    menuSeparator(),
-    menuAction('刷新', 'refresh-icon', refreshCurrentView)
-  ]);
+    menuSeparator()
+  ];
+
+  if (state.view === 'drive') {
+    menuItems.push(menuAction('粘贴', 'paste-icon', pasteFromClipboard));
+    menuItems.push(menuSeparator());
+  } else if (state.view === 'album') {
+    menuItems.push(menuAction('相册备份', 'backup', selectAlbumBackupFolder));
+    menuItems.push(menuSeparator());
+  }
+
+  menuItems.push(menuAction('刷新', 'refresh-icon', refreshCurrentView));
+
+  showContextMenu(event, menuItems);
 }
 
 function showContextMenu(event, actions) {
@@ -1188,10 +1798,7 @@ function showContextMenu(event, actions) {
     button.className = `menu-item ${action.variant === 'danger' ? 'danger-item' : ''}`.trim();
 
     if (action.icon) {
-      const icon = document.createElement('span');
-      icon.className = `icon ${action.icon}`;
-      icon.setAttribute('aria-hidden', 'true');
-      button.append(icon);
+      button.append(materialIcon(materialIconName(action.icon)));
     }
 
     const label = document.createElement('span');
@@ -1348,6 +1955,7 @@ function renderBreadcrumb() {
 
   const descriptions = {
     quick: '根目录中的常用入口和最近文件',
+    transfers: '实时任务、下载记录与下载路径',
     nodes: '查看和维护分布式上传节点',
     settings: '客户端连接与认证'
   };
@@ -1442,6 +2050,54 @@ function renderStorageDetails() {
   }
 }
 
+function buildNodeRows(nodeConfigs, storage) {
+  const rows = [];
+  const capacityById = new Map((storage?.nodes || []).map((node) => [node.id || 'main', node]));
+  const mainCapacity = capacityById.get('main') || {
+    id: 'main',
+    name: '主控账号',
+    used: storage?.used,
+    total: storage?.total,
+    online: true
+  };
+
+  rows.push({
+    ...mainCapacity,
+    id: 'main',
+    name: mainCapacity.name || '主控账号',
+    isMain: true,
+    enabled: true,
+    displayUrl: displayBaseUrlHost(state.config?.baseUrl || '') || '主账号节点'
+  });
+
+  for (const config of nodeConfigs) {
+    const capacity = capacityById.get(config.id) || {};
+    rows.push({
+      ...capacity,
+      ...config,
+      id: config.id || capacity.id,
+      name: config.name || capacity.name || config.id || '未命名节点',
+      used: capacity.used,
+      total: capacity.total,
+      online: capacity.online,
+      displayUrl: displayBaseUrlHost(config.url)
+    });
+  }
+
+  for (const capacity of storage?.nodes || []) {
+    if (!capacity.id || capacity.id === 'main' || rows.some((node) => node.id === capacity.id)) {
+      continue;
+    }
+    rows.push({
+      ...capacity,
+      enabled: capacity.online !== false,
+      displayUrl: displayBaseUrlHost(capacity.url)
+    });
+  }
+
+  return rows;
+}
+
 function renderNodes() {
   els.nodesList.replaceChildren();
 
@@ -1455,7 +2111,7 @@ function renderNodes() {
 
   for (const node of state.nodes) {
     const item = document.createElement('article');
-    item.className = 'node-item';
+    item.className = `node-item ${node.isMain ? 'main-node' : ''}`.trim();
 
     const head = document.createElement('div');
     head.className = 'node-item-head';
@@ -1465,76 +2121,56 @@ function renderNodes() {
     name.textContent = node.name || node.id;
     const url = document.createElement('div');
     url.className = 'muted ellipsis';
-    url.textContent = node.url;
+    url.textContent = node.displayUrl || displayBaseUrlHost(node.url) || '主账号节点';
     title.append(name, url);
 
     const badge = document.createElement('span');
-    badge.className = `badge ${node.enabled ? '' : 'off'}`;
-    badge.textContent = node.enabled ? '启用' : '停用';
+    badge.className = `badge ${node.online === false || node.enabled === false ? 'off' : ''}`;
+    badge.textContent = node.isMain
+      ? '主账号'
+      : node.online === false
+        ? '离线'
+        : node.enabled === false
+          ? '停用'
+          : '在线';
     head.append(title, badge);
 
+    const used = Number(node.used || 0);
+    const total = Number(node.total || 0);
+    const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
     const meta = document.createElement('div');
     meta.className = 'muted';
-    meta.textContent = `ID: ${node.id}，权重: ${node.weight || 1}`;
+    meta.textContent = `ID: ${node.id || 'main'}，容量: ${formatBytes(used)} / ${total ? formatBytes(total) : '未知'}`;
+
+    const meter = document.createElement('div');
+    meter.className = 'meter';
+    const fill = document.createElement('div');
+    fill.className = 'meter-fill';
+    fill.style.width = `${percent}%`;
+    meter.append(fill);
 
     const actions = document.createElement('div');
     actions.className = 'node-actions';
-    actions.append(
-      actionButton('编辑', () => fillNodeForm(node)),
-      actionButton('测试', () => testNode(node.id)),
-      actionButton('删除', () => deleteNode(node.id), 'danger')
-    );
+    if (!node.isMain) {
+      actions.append(
+        actionButton('编辑', () => fillNodeForm(node)),
+        actionButton('测试', () => testNode(node.id)),
+        actionButton('删除', () => deleteNode(node.id), 'danger')
+      );
+    }
 
-    item.append(head, meta, actions);
+    item.append(head, meta, meter);
+    if (actions.children.length) {
+      item.append(actions);
+    }
     els.nodesList.append(item);
   }
 }
 
 function renderTransfers() {
-  els.transferList.replaceChildren();
-
-  if (!state.transfers.size) {
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = '暂无传输任务';
-    els.transferList.append(empty);
-    return;
-  }
-
-  const items = [...state.transfers.values()]
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  for (const transfer of items) {
-    const item = document.createElement('div');
-    item.className = 'transfer-item';
-
-    const title = document.createElement('div');
-    title.className = 'transfer-title ellipsis';
-    title.textContent = `${transfer.type === 'upload' ? '上传' : '下载'} ${transfer.name || transfer.remotePath}`;
-    title.title = transfer.remotePath || transfer.name;
-
-    const status = document.createElement('div');
-    status.className = 'transfer-meta';
-    status.textContent = transferStatusText(transfer);
-
-    const meta = document.createElement('div');
-    meta.className = 'transfer-meta';
-    meta.textContent = transfer.message || transfer.phase || '';
-
-    const progress = document.createElement('div');
-    progress.className = 'progress';
-    const fill = document.createElement('div');
-    fill.style.width = `${progressPercent(transfer)}%`;
-    progress.append(fill);
-
-    item.append(title, status, meta);
-    if (transfer.type === 'download' && transfer.status === 'running' && transfer.phase !== '正在取消') {
-      item.append(actionButton('取消', () => cancelDownload(transfer.id), 'danger'));
-    }
-    if (transfer.localPath && transfer.status === 'done') {
-      item.append(actionButton('定位', () => api.openPath(transfer.localPath)));
-    }
-    item.append(progress);
-    els.transferList.append(item);
+  renderTransferBubble();
+  if (state.view === 'transfers') {
+    renderTransferView();
   }
 }
 
@@ -1558,13 +2194,180 @@ function hideStoragePopover() {
   els.storagePopover.classList.add('hidden');
 }
 
-function clearDoneTransfers() {
+function renderTransferBubble() {
+  const transfers = [...state.transfers.values()];
+  const total = transfers.length;
+  const done = transfers.filter((transfer) => transfer.status === 'done').length;
+  const running = transfers
+    .filter((transfer) => transfer.status === 'running')
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  const current = running[0] || null;
+  const currentPercent = current ? progressPercent(current) : 0;
+  const totalPercent = aggregateProgressPercent(transfers);
+  const hasActiveUpload = running.some((transfer) => transfer.type === 'upload');
+  const hasActiveDownload = running.some((transfer) => transfer.type === 'download');
+  const isIdle = total === 0 || (!running.length && done !== total);
+  const isDone = total > 0 && !running.length && done === total;
+  const isSingle = running.length === 1 && total === 1;
+
+  els.transferBubbleCount.textContent = isSingle ? '' : `${done}/${total}`;
+  els.transferBubbleProgress.textContent = isSingle
+    ? `${currentPercent}%`
+    : `${currentPercent}%/${totalPercent}%`;
+  els.transferBubble.style.setProperty('--current-progress', `${currentPercent * 3.6}deg`);
+  els.transferBubble.style.setProperty('--total-progress', `${totalPercent * 3.6}deg`);
+  els.transferBubble.classList.toggle('has-upload', hasActiveUpload);
+  els.transferBubble.classList.toggle('has-download', hasActiveDownload);
+  els.transferBubble.classList.toggle('is-active', hasActiveUpload || hasActiveDownload);
+  els.transferBubble.classList.toggle('is-idle', isIdle);
+  els.transferBubble.classList.toggle('is-done', isDone);
+  els.transferBubble.classList.toggle('is-single', isSingle);
+}
+
+function renderTransferView() {
+  const transfers = [...state.transfers.values()]
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  renderTransferList(
+    els.uploadTransferList,
+    transfers.filter((transfer) => transfer.type === 'upload'),
+    '暂无上传任务'
+  );
+  renderTransferList(
+    els.downloadTransferList,
+    transfers.filter((transfer) => transfer.type === 'download'),
+    '暂无下载任务'
+  );
+  renderDownloadHistory();
+}
+
+function renderTransferList(container, items, emptyText) {
+  container.replaceChildren();
+  if (!items.length) {
+    container.append(emptyMessage(emptyText));
+    return;
+  }
+
+  for (const transfer of items) {
+    container.append(makeTransferItem(transfer));
+  }
+}
+
+function makeTransferItem(transfer) {
+  const item = document.createElement('div');
+  item.className = `transfer-item transfer-${transfer.type || 'task'}`;
+
+  const title = document.createElement('div');
+  title.className = 'transfer-title ellipsis';
+  title.textContent = transfer.name || transfer.remotePath || '未命名任务';
+  title.title = transfer.remotePath || transfer.name || '';
+
+  const status = document.createElement('div');
+  status.className = 'transfer-meta';
+  status.textContent = transferStatusText(transfer);
+
+  const meta = document.createElement('div');
+  meta.className = 'transfer-meta';
+  meta.textContent = transfer.message || transfer.phase || '';
+
+  const progress = document.createElement('div');
+  progress.className = 'progress';
+  const fill = document.createElement('div');
+  fill.style.width = `${progressPercent(transfer)}%`;
+  progress.append(fill);
+
+  item.append(title, status, meta);
+  if (transfer.type === 'download' && transfer.status === 'running' && transfer.phase !== '正在取消') {
+    item.append(actionButton('取消', () => cancelDownload(transfer.id), 'danger'));
+  }
+  if (transfer.localPath && transfer.status === 'done') {
+    item.append(actionButton('定位', () => api.openPath(transfer.localPath)));
+  }
+  item.append(progress);
+  return item;
+}
+
+function renderDownloadHistory() {
+  els.downloadHistoryList.replaceChildren();
+  if (!state.downloadHistory.length) {
+    els.downloadHistoryList.append(emptyMessage('暂无已下载文件'));
+    return;
+  }
+
+  for (const record of state.downloadHistory) {
+    const item = document.createElement('div');
+    item.className = 'transfer-item history-item';
+
+    const title = document.createElement('div');
+    title.className = 'transfer-title ellipsis';
+    title.textContent = record.name || record.remotePath || '已下载文件';
+    title.title = record.localPath || record.remotePath || '';
+
+    const status = document.createElement('div');
+    status.className = 'transfer-meta';
+    status.textContent = record.completedAt ? formatDate(record.completedAt) : '已下载';
+
+    const meta = document.createElement('div');
+    meta.className = 'transfer-meta ellipsis';
+    meta.textContent = record.localPath || '';
+    meta.title = record.localPath || '';
+
+    item.append(title, status, meta);
+    if (record.localPath) {
+      item.append(actionButton('定位', () => api.openPath(record.localPath)));
+    }
+    els.downloadHistoryList.append(item);
+  }
+}
+
+function emptyMessage(text) {
+  const empty = document.createElement('div');
+  empty.className = 'empty-message muted';
+  empty.textContent = text;
+  return empty;
+}
+
+function clearDoneTransfers(type) {
   for (const [id, transfer] of state.transfers.entries()) {
-    if (['done', 'error', 'canceled'].includes(transfer.status)) {
+    if ((type ? transfer.type === type : true) && ['done', 'error', 'canceled'].includes(transfer.status)) {
       state.transfers.delete(id);
     }
   }
   renderTransfers();
+}
+
+function loadDownloadHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DOWNLOAD_HISTORY_STORAGE_KEY) || '[]');
+    state.downloadHistory = Array.isArray(saved) ? saved : [];
+  } catch {
+    state.downloadHistory = [];
+  }
+}
+
+function saveDownloadHistory() {
+  localStorage.setItem(DOWNLOAD_HISTORY_STORAGE_KEY, JSON.stringify(state.downloadHistory.slice(0, MAX_DOWNLOAD_HISTORY)));
+}
+
+function persistDownloadedFile(transfer) {
+  const record = {
+    id: transfer.id,
+    name: transfer.name || transfer.remotePath,
+    remotePath: transfer.remotePath || '',
+    localPath: transfer.localPath || '',
+    completedAt: new Date().toISOString()
+  };
+  state.downloadHistory = [
+    record,
+    ...state.downloadHistory.filter((item) => item.id !== record.id && item.localPath !== record.localPath)
+  ].slice(0, MAX_DOWNLOAD_HISTORY);
+  saveDownloadHistory();
+}
+
+function clearDownloadHistory() {
+  state.downloadHistory = [];
+  saveDownloadHistory();
+  renderDownloadHistory();
+  toast('已清空下载记录');
 }
 
 async function cancelDownload(transferId) {
@@ -1610,6 +2413,87 @@ async function uploadFiles() {
     const failed = results.filter((result) => !result.ok);
     toast(failed.length ? `${failed.length} 个文件上传失败` : '上传完成');
     await refreshAfterMutation();
+  });
+}
+
+async function saveBackupSettings() {
+  await runTask(async () => {
+    const intervalMinutes = Math.max(1, Number(els.backupIntervalInput.value) || 15);
+    const config = await api.setBackupConfig({
+      intervalMinutes,
+      autoStart: els.backupAutoStart.checked
+    });
+    state.backup.intervalMinutes = Number(config.intervalMinutes) || intervalMinutes;
+    state.backup.autoStart = Boolean(config.autoStart);
+    renderBackup();
+    toast('自动备份设置已保存');
+  });
+}
+
+async function selectBackupFolder() {
+  await runTask(async () => {
+    const result = await api.selectBackupFolder();
+    if (result?.canceled || !result?.filePath) {
+      return;
+    }
+    const config = await api.addBackupFolder(result.filePath);
+    state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
+    state.backup.intervalMinutes = Number(config.intervalMinutes) || state.backup.intervalMinutes;
+    state.backup.autoStart = Boolean(config.autoStart);
+    renderBackup();
+    toast('已添加自动备份文件夹');
+  });
+}
+
+async function selectAlbumBackupFolder() {
+  await runTask(async () => {
+    const result = await api.selectAlbumBackupFolder();
+    if (result?.canceled || !result?.filePath) {
+      return;
+    }
+    const config = await api.addAlbumBackupFolder(result.filePath);
+    state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
+    state.backup.intervalMinutes = Number(config.intervalMinutes) || state.backup.intervalMinutes;
+    state.backup.autoStart = Boolean(config.autoStart);
+    renderBackup();
+    toast('已添加相册备份，将同步图片和视频到相册');
+    await loadAlbum(state.albumPath);
+  });
+}
+
+async function runBackupNow(jobId) {
+  await runTask(async () => {
+    await api.runBackupNow(jobId || undefined);
+    await loadBackupConfig();
+    toast('备份任务已执行');
+  });
+}
+
+async function toggleBackupJob(job) {
+  await runTask(async () => {
+    const config = await api.setBackupEnabled(job.id, job.enabled === false);
+    state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
+    renderBackup();
+  });
+}
+
+async function removeBackupJob(job) {
+  const ok = await openConfirmDialog({
+    title: '删除自动备份',
+    message: `确定删除“${job.name || job.localPath}”的自动备份任务吗？远端已备份文件不会被删除。`,
+    confirmText: '删除',
+    danger: true
+  });
+  if (!ok) {
+    return;
+  }
+
+  await runTask(async () => {
+    const config = await api.removeBackupJob(job.id);
+    state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
+    state.backup.statuses.delete(job.id);
+    renderBackup();
+    toast('已删除自动备份任务');
   });
 }
 
@@ -1700,6 +2584,18 @@ async function refreshAfterMutation() {
   await Promise.allSettled([loadQuick(), loadStorage()]);
 }
 
+function scheduleUploadListRefresh() {
+  clearTimeout(scheduleUploadListRefresh.timer);
+  scheduleUploadListRefresh.timer = setTimeout(() => {
+    if (state.view === 'album') {
+      loadAlbum(state.albumPath);
+    } else if (state.view === 'drive') {
+      loadFiles(state.currentPath);
+    }
+    Promise.allSettled([loadQuick(), loadStorage()]);
+  }, 500);
+}
+
 async function saveNode(event) {
   event.preventDefault();
   await runTask(async () => {
@@ -1708,8 +2604,7 @@ async function saveNode(event) {
       name: els.nodeName.value.trim(),
       url: els.nodeUrl.value.trim(),
       token: els.nodeToken.value.trim() || undefined,
-      enabled: els.nodeEnabled.checked,
-      weight: Number(els.nodeWeight.value || 1)
+      enabled: els.nodeEnabled.checked
     };
     await api.nodesSave(node);
     resetNodeForm();
@@ -1724,7 +2619,6 @@ function fillNodeForm(node) {
   els.nodeName.value = node.name || '';
   els.nodeUrl.value = node.url || '';
   els.nodeToken.value = '';
-  els.nodeWeight.value = node.weight || 1;
   els.nodeEnabled.checked = Boolean(node.enabled);
 }
 
@@ -1732,7 +2626,6 @@ function resetNodeForm() {
   els.nodeFormTitle.textContent = '新增节点';
   els.nodeForm.reset();
   els.nodeId.value = '';
-  els.nodeWeight.value = '1';
   els.nodeEnabled.checked = true;
 }
 
@@ -1856,8 +2749,89 @@ function joinRemote(...segments) {
     .replace(/\/+$/, '');
 }
 
+function clipboardPasteItemNames(items) {
+  const names = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    const name = clipboardTargetName(item);
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    names.push(name);
+  }
+
+  return names;
+}
+
+function clipboardPasteFailures(result) {
+  if (!Array.isArray(result?.results)) {
+    return [];
+  }
+  return result.results.filter((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    return entry.ok === false || Boolean(entry.error) || Number(entry.status || 0) >= 400;
+  });
+}
+
+function mergeClipboardItems(serverClipboard, localClipboard) {
+  const serverItems = Array.isArray(serverClipboard?.items) ? serverClipboard.items : [];
+  const localItems = Array.isArray(localClipboard?.items) ? localClipboard.items : [];
+
+  if (!serverItems.length) {
+    return localItems;
+  }
+  if (!localItems.length) {
+    return serverItems;
+  }
+
+  const sameClipboard =
+    (serverClipboard?.action || 'copy') === (localClipboard?.action || 'copy') &&
+    (serverClipboard?.sourcePath || '') === (localClipboard?.sourcePath || '');
+  if (!sameClipboard) {
+    return serverItems;
+  }
+
+  return serverItems.map((item) => {
+    const name = clipboardTargetName(item);
+    const localMatch = localItems.find((entry) => clipboardTargetName(entry) === name);
+    return localMatch ? { ...localMatch, name } : item;
+  });
+}
+
+function clipboardTargetName(item) {
+  const pathValue = joinRemote(clipboardItemPath(item));
+  const parts = pathValue.split('/').filter(Boolean);
+  return parts.pop() || pathValue;
+}
+
+function clipboardItemPath(item) {
+  if (typeof item === 'string') {
+    return item;
+  }
+  return item?.path || item?.remotePath || item?.name || '';
+}
+
 function displayPath(remotePath) {
   return remotePath || '我的云盘';
+}
+
+function displayBaseUrlHost(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  try {
+    const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return url.host;
+  } catch {
+    return raw
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/.*$/, '');
+  }
 }
 
 function hideKeepFiles(files) {
@@ -1919,6 +2893,21 @@ function progressPercent(transfer) {
     return 0;
   }
   return Math.min(100, Math.round((transfer.transferred / transfer.total) * 100));
+}
+
+function aggregateProgressPercent(transfers) {
+  if (!transfers.length) {
+    return 0;
+  }
+  const totalBytes = transfers.reduce((sum, transfer) => sum + Number(transfer.total || 0), 0);
+  if (totalBytes > 0) {
+    const transferredBytes = transfers.reduce((sum, transfer) => {
+      return sum + (transfer.status === 'done' ? Number(transfer.total || 0) : Number(transfer.transferred || 0));
+    }, 0);
+    return Math.min(100, Math.round((transferredBytes / totalBytes) * 100));
+  }
+  const totalPercent = transfers.reduce((sum, transfer) => sum + progressPercent(transfer), 0);
+  return Math.round(totalPercent / transfers.length);
 }
 
 function transferStatusText(transfer) {

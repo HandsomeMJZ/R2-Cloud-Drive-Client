@@ -8,12 +8,16 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "check": "node --check src/main/main.js && node --check src/main/apiClient.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js",
+    "check": "node --check src/main/main.js && node --check src/main/apiClient.js && node --check src/preload/preload.js && node --check src/renderer/mobile-bridge.js && node --check src/renderer/renderer.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win --config.directories.output=release-windows",
     "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android",
+    "android:debug": "set \"JAVA_HOME=C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.11.10-hotspot\" && set \"ANDROID_HOME=C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\" && set \"ANDROID_SDK_ROOT=C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\" && set \"PATH=%JAVA_HOME%\\bin;%ANDROID_HOME%\\platform-tools;%PATH%\" && cd android && gradlew.bat assembleDebug"
   },
   "build": {
     "appId": "io.qzz.r2drive.client",
@@ -48,7 +52,12 @@
     }
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.4",
     "electron": "^42.2.0",
     "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/core": "^8.3.4"
   }
 }

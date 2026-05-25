@@ -1,0 +1,137 @@
+:root {
+  --bg: #f6f8fc;
+  --surface: #ffffff;
+  --text: #202124;
+  --muted: #5f6368;
+  --border: #d9e2ef;
+  --primary: #1a73e8;
+  --green: #137333;
+  --danger: #c5221f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: calc(18px + env(safe-area-inset-top)) 14px calc(18px + env(safe-area-inset-bottom));
+}
+
+.top,
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+
+button,
+.picker span {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 14px;
+  color: #fff;
+  background: var(--primary);
+  font: inherit;
+  font-weight: 700;
+}
+
+.picker input {
+  display: none;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef3fb;
+}
+
+.progress div {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--green));
+  transition: width 180ms ease;
+}
+
+.log {
+  display: grid;
+  gap: 8px;
+  max-height: 38vh;
+  overflow: auto;
+  font-size: 13px;
+}
+
+.log-item {
+  padding: 9px;
+  border-radius: 8px;
+  background: #f6f8fc;
+  overflow-wrap: anywhere;
+}
+
+.log-item.error {
+  color: var(--danger);
+}

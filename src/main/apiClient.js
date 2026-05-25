@@ -4,10 +4,14 @@ const https = require('node:https');
 const path = require('node:path');
 const { pipeline } = require('node:stream');
 
-const DEFAULT_BASE_URL = 'https://cloud.junzhen.qzz.io';
+const DEFAULT_BASE_URL = '';
 const SIMPLE_UPLOAD_LIMIT = 90 * 1024 * 1024;
+const DISTRIBUTED_UPLOAD_LIMIT = 100 * 1024 * 1024;
 const CHUNK_SIZE = 32 * 1024 * 1024;
+const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = 10000;
 const DOWNLOAD_MAX_RETRIES = 6;
+const UPLOAD_MAX_RETRIES = 3;
 
 class HttpError extends Error {
   constructor(message, status, body) {
@@ -24,7 +28,13 @@ class R2DriveClient {
     this.config = {
       baseUrl: DEFAULT_BASE_URL,
       sessionCookie: '',
-      downloadDir: ''
+      downloadDir: '',
+      backupJobs: [],
+      backupIntervalMinutes: 15,
+      backupAutoStart: false,
+      closeBehavior: 'ask',
+      customBrandHtml: '',
+      customBrandCss: ''
     };
     this.loadConfig();
   }
@@ -36,7 +46,7 @@ class R2DriveClient {
       this.config = {
         ...this.config,
         ...saved,
-        baseUrl: normalizeBaseUrl(saved.baseUrl || this.config.baseUrl)
+        baseUrl: normalizeBaseUrl(saved.baseUrl || '')
       };
     } catch (error) {
       if (error.code !== 'ENOENT') {
@@ -54,6 +64,12 @@ class R2DriveClient {
     return {
       baseUrl: this.config.baseUrl,
       downloadDir: this.config.downloadDir || '',
+      backupJobs: Array.isArray(this.config.backupJobs) ? this.config.backupJobs : [],
+      backupIntervalMinutes: Number(this.config.backupIntervalMinutes) || 15,
+      backupAutoStart: Boolean(this.config.backupAutoStart),
+      closeBehavior: this.config.closeBehavior || 'ask',
+      customBrandHtml: this.config.customBrandHtml || '',
+      customBrandCss: this.config.customBrandCss || '',
       hasSession: Boolean(this.config.sessionCookie)
     };
   }
@@ -64,6 +80,27 @@ class R2DriveClient {
     }
     if (typeof nextConfig.downloadDir === 'string') {
       this.config.downloadDir = nextConfig.downloadDir.trim();
+    }
+    if (Array.isArray(nextConfig.backupJobs)) {
+      this.config.backupJobs = nextConfig.backupJobs;
+    }
+    if (nextConfig.backupIntervalMinutes !== undefined) {
+      const minutes = Number(nextConfig.backupIntervalMinutes);
+      if (Number.isFinite(minutes) && minutes >= 1) {
+        this.config.backupIntervalMinutes = Math.min(1440, Math.round(minutes));
+      }
+    }
+    if (typeof nextConfig.backupAutoStart === 'boolean') {
+      this.config.backupAutoStart = nextConfig.backupAutoStart;
+    }
+    if (['ask', 'tray', 'quit'].includes(nextConfig.closeBehavior)) {
+      this.config.closeBehavior = nextConfig.closeBehavior;
+    }
+    if (typeof nextConfig.customBrandHtml === 'string') {
+      this.config.customBrandHtml = nextConfig.customBrandHtml;
+    }
+    if (typeof nextConfig.customBrandCss === 'string') {
+      this.config.customBrandCss = nextConfig.customBrandCss;
     }
     this.saveConfig();
     return this.getConfig();
@@ -150,6 +187,47 @@ class R2DriveClient {
     });
   }
 
+  // Clipboard API
+  async clipboardGet(id = 'default') {
+    return this.requestJson(`/api/clipboard?id=${encodeURIComponent(id)}`, {
+      includeCookie: false
+    });
+  }
+
+  async clipboardSet(items, action = 'copy', sourcePath = '', id = 'default') {
+    return this.requestJson(`/api/clipboard?id=${encodeURIComponent(id)}`, {
+      method: 'POST',
+      includeCookie: false,
+      body: {
+        items: Array.isArray(items) ? items : [items],
+        action: action || 'copy',
+        sourcePath: sourcePath || ''
+      }
+    });
+  }
+
+  async clipboardDelete(id = 'default') {
+    return this.requestJson(`/api/clipboard?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      includeCookie: false
+    });
+  }
+
+  async clipboardPaste(payload = {}) {
+    const action = payload.action === 'cut' ? 'cut' : 'copy';
+    const items = Array.isArray(payload.items) ? payload.items : [payload.items];
+
+    return this.requestJson('/api/clipboard/paste', {
+      method: 'POST',
+      body: {
+        action,
+        items: items.map((item) => path.posix.basename(normalizeRemotePath(item))).filter(Boolean),
+        sourcePath: normalizeRemotePath(payload.sourcePath || ''),
+        targetPath: normalizeRemotePath(payload.targetPath || '')
+      }
+    });
+  }
+
   async downloadToFile(remotePath, outputPath, onProgress, options = {}) {
     const url = this.makeUrl(`/api/download?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`);
     const headers = this.cookieHeaders(url);
@@ -215,24 +293,35 @@ class R2DriveClient {
     const stat = await fs.promises.stat(localFilePath);
     const targetPath = normalizeRemotePath(remotePath);
     const contentType = getContentType(localFilePath);
+    const plan = createUploadPlan(stat.size);
+
+    onProgress?.({
+      transferred: 0,
+      total: stat.size,
+      phase: '准备上传',
+      strategy: plan.strategy
+    });
 
     if (stat.size <= SIMPLE_UPLOAD_LIMIT) {
       return this.uploadSimple(localFilePath, targetPath, stat.size, onProgress);
     }
 
-    try {
-      return await this.uploadDistributed(localFilePath, targetPath, stat.size, contentType, onProgress);
-    } catch (error) {
-      if (error.status !== 409) {
-        throw error;
+    if (stat.size > DISTRIBUTED_UPLOAD_LIMIT) {
+      try {
+        return await this.uploadDistributed(localFilePath, targetPath, stat.size, contentType, plan, onProgress);
+      } catch (error) {
+        if (!isDistributedFallbackError(error)) {
+          throw error;
+        }
       }
-      return this.uploadMultipart(localFilePath, targetPath, stat.size, contentType, onProgress);
     }
+
+    return this.uploadMultipart(localFilePath, targetPath, stat.size, contentType, plan, onProgress);
   }
 
   async uploadSimple(localFilePath, remotePath, size, onProgress) {
     const url = this.makeUrl(`/api/upload?path=${encodeURIComponent(remotePath)}`);
-    const response = await requestStream({
+    const response = await requestStreamWithRetry((attempt) => ({
       method: 'POST',
       url,
       headers: {
@@ -243,15 +332,16 @@ class R2DriveClient {
       contentLength: size,
       onProgress: (progress) => onProgress?.({
         ...progress,
-        phase: '普通上传',
+        phase: attempt > 1 ? `普通上传（重试 ${attempt}/${UPLOAD_MAX_RETRIES + 1}）` : '普通上传',
         strategy: 'simple'
       })
-    });
+    }));
     return parseJsonResponse(response.body);
   }
 
-  async uploadDistributed(localFilePath, remotePath, size, contentType, onProgress) {
-    const partCount = Math.ceil(size / CHUNK_SIZE);
+  async uploadDistributed(localFilePath, remotePath, size, contentType, plan, onProgress) {
+    const partCount = plan.partCount;
+    const chunkSize = plan.chunkSize;
     let sessionId = '';
 
     try {
@@ -261,39 +351,64 @@ class R2DriveClient {
           path: remotePath,
           size,
           contentType,
-          chunkSize: CHUNK_SIZE,
+          chunkSize,
           parts: partCount
         }
       });
 
       sessionId = init.sessionId;
+      const parts = Array.isArray(init.parts) ? init.parts.slice().sort((a, b) => a.partNumber - b.partNumber) : [];
+      if (!init.ok || !sessionId || !parts.length) {
+        throw new Error('分布式上传初始化响应无效');
+      }
+
       let completed = 0;
 
-      for (const part of init.parts || []) {
-        const start = (part.partNumber - 1) * CHUNK_SIZE;
-        const end = start + part.size - 1;
+      for (const part of parts) {
+        const partNumber = Number(part.partNumber);
+        const partSize = Number(part.size || 0);
+        if (!partNumber || partSize <= 0 || !part.uploadUrl) {
+          throw new Error('分布式上传分片信息无效');
+        }
 
-        const response = await requestStream({
+        const start = (partNumber - 1) * chunkSize;
+        const end = start + partSize - 1;
+        const url = this.makeUrl(part.uploadUrl);
+        const headers = {
+          ...this.cookieHeaders(url),
+          'Content-Type': 'application/octet-stream'
+        };
+        if (part.token) {
+          headers.Authorization = `Bearer ${part.token}`;
+        }
+
+        const response = await requestStreamWithRetry((attempt) => ({
           method: 'PUT',
-          url: new URL(part.uploadUrl),
-          headers: {
-            Authorization: `Bearer ${part.token}`,
-            'Content-Type': 'application/octet-stream'
-          },
+          url,
+          headers,
           bodyStream: fs.createReadStream(localFilePath, { start, end }),
-          contentLength: part.size,
+          contentLength: partSize,
           onProgress: (progress) => onProgress?.({
             transferred: completed + progress.transferred,
             total: size,
-            phase: `分布式上传 ${part.partNumber}/${partCount}`,
+            phase: attempt > 1
+              ? `分布式上传 ${partNumber}/${partCount}（重试 ${attempt}/${UPLOAD_MAX_RETRIES + 1}）`
+              : `分布式上传 ${partNumber}/${partCount}`,
             strategy: 'distributed',
-            partNumber: part.partNumber,
+            partNumber,
             partCount
           })
-        });
+        }));
         parseJsonResponse(response.body);
-        completed += part.size;
+        completed += partSize;
       }
+
+      onProgress?.({
+        transferred: size,
+        total: size,
+        phase: '完成分布式上传',
+        strategy: 'distributed'
+      });
 
       await this.requestJson('/api/distributed/complete', {
         method: 'POST',
@@ -312,7 +427,7 @@ class R2DriveClient {
     }
   }
 
-  async uploadMultipart(localFilePath, remotePath, size, contentType, onProgress) {
+  async uploadMultipart(localFilePath, remotePath, size, contentType, plan, onProgress) {
     const init = await this.requestJson('/api/multipart/init', {
       method: 'POST',
       body: {
@@ -322,18 +437,23 @@ class R2DriveClient {
     });
 
     const uploadId = init.uploadId;
-    const partCount = Math.ceil(size / CHUNK_SIZE);
+    if (!uploadId) {
+      throw new Error('R2 分片上传初始化响应无效');
+    }
+
+    const partCount = plan.partCount;
+    const chunkSize = plan.chunkSize;
     const parts = [];
     let completed = 0;
 
     try {
       for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
-        const start = (partNumber - 1) * CHUNK_SIZE;
-        const partSize = Math.min(CHUNK_SIZE, size - start);
+        const start = (partNumber - 1) * chunkSize;
+        const partSize = Math.min(chunkSize, size - start);
         const end = start + partSize - 1;
         const url = this.makeUrl(`/api/multipart/part?path=${encodeURIComponent(remotePath)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`);
 
-        const response = await requestStream({
+        const response = await requestStreamWithRetry((attempt) => ({
           method: 'POST',
           url,
           headers: {
@@ -345,16 +465,25 @@ class R2DriveClient {
           onProgress: (progress) => onProgress?.({
             transferred: completed + progress.transferred,
             total: size,
-            phase: `R2 分片上传 ${partNumber}/${partCount}`,
+            phase: attempt > 1
+              ? `R2 分片上传 ${partNumber}/${partCount}（重试 ${attempt}/${UPLOAD_MAX_RETRIES + 1}）`
+              : `R2 分片上传 ${partNumber}/${partCount}`,
             strategy: 'multipart',
             partNumber,
             partCount
           })
-        });
+        }));
 
         parts.push(parseJsonResponse(response.body));
         completed += partSize;
       }
+
+      onProgress?.({
+        transferred: size,
+        total: size,
+        phase: '完成 R2 分片上传',
+        strategy: 'multipart'
+      });
 
       return this.requestJson('/api/multipart/complete', {
         method: 'POST',
@@ -511,6 +640,11 @@ function requestStream(options) {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
         const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode < 200 || res.statusCode >= 300) {
           reject(new HttpError(readableHttpError(res.statusCode, body), res.statusCode, body));
@@ -533,6 +667,7 @@ function requestStream(options) {
       }
       settled = true;
       cleanup();
+      bodyStream?.destroy?.();
       reject(error);
     };
     const onAbort = () => {
@@ -551,12 +686,30 @@ function requestStream(options) {
           total: contentLength
         });
       });
-      bodyStream.on('error', reject);
+      bodyStream.on('error', finishReject);
       bodyStream.pipe(req);
     } else {
       req.end();
     }
   });
+}
+
+async function requestStreamWithRetry(createOptions, maxRetries = UPLOAD_MAX_RETRIES) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    try {
+      return await requestStream(createOptions(attempt));
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableUploadError(error) || attempt > maxRetries) {
+        throw error;
+      }
+      await delay(Math.min(6000, 450 * (2 ** (attempt - 1))));
+    }
+  }
+
+  throw lastError;
 }
 
 function handleDownloadResponse(res, outputPath, onProgress, resolve, reject) {
@@ -617,7 +770,7 @@ async function downloadWithRangeRetry(url, headers, outputPath, onProgress, opti
   while (downloaded < info.total) {
     throwIfAborted(options.signal);
     const start = downloaded;
-    const end = Math.min(info.total - 1, start + DOWNLOAD_CHUNK_SIZE - 1);
+    const end = Math.min(info.total - 1, start + CHUNK_SIZE - 1);
 
     try {
       const result = await downloadRange(url, headers, outputPath, start, end, info.total, onProgress, options);
@@ -915,6 +1068,26 @@ function isRetryableDownloadError(error) {
   ].includes(code) || message.includes('aborted') || message.includes('socket hang up');
 }
 
+function isRetryableUploadError(error) {
+  if (isAbortError(error)) {
+    return false;
+  }
+
+  if (error instanceof HttpError) {
+    return [408, 425, 429, 500, 502, 503, 504].includes(error.status);
+  }
+
+  const code = error?.code || '';
+  const message = String(error?.message || error || '').toLowerCase();
+  return [
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'EPIPE',
+    'ECONNABORTED',
+    'UND_ERR_ABORTED'
+  ].includes(code) || message.includes('socket hang up') || message.includes('aborted');
+}
+
 function makeDownloadError(error) {
   if (isAbortError(error)) {
     return error;
@@ -977,8 +1150,41 @@ function headersForRedirect(headers, fromUrl, toUrl) {
   return nextHeaders;
 }
 
+function createUploadPlan(size) {
+  const strategy = size > DISTRIBUTED_UPLOAD_LIMIT
+    ? 'distributed'
+    : size > SIMPLE_UPLOAD_LIMIT
+      ? 'multipart'
+      : 'simple';
+  let chunkSize = CHUNK_SIZE;
+  let partCount = Math.max(1, Math.ceil(size / chunkSize));
+
+  if (partCount > MAX_MULTIPART_PARTS) {
+    chunkSize = Math.ceil(size / MAX_MULTIPART_PARTS);
+    chunkSize = Math.min(MAX_CHUNK_SIZE, Math.max(CHUNK_SIZE, chunkSize));
+    partCount = Math.ceil(size / chunkSize);
+  }
+
+  if (partCount > MAX_MULTIPART_PARTS || chunkSize > MAX_CHUNK_SIZE) {
+    throw new Error(`文件过大：分片数超过 ${MAX_MULTIPART_PARTS} 或单片超过 ${formatByteCount(MAX_CHUNK_SIZE)}`);
+  }
+
+  return {
+    strategy,
+    chunkSize,
+    partCount
+  };
+}
+
+function isDistributedFallbackError(error) {
+  return (error instanceof HttpError && error.status === 409) || isRetryableUploadError(error);
+}
+
 function normalizeBaseUrl(value) {
-  const trimmed = String(value || DEFAULT_BASE_URL).trim();
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   const url = new URL(withProtocol);
   url.pathname = url.pathname.replace(/\/+$/, '') || '/';
@@ -1001,6 +1207,17 @@ function parseJsonResponse(text) {
   } catch (error) {
     throw new Error(`服务器返回的 JSON 无法解析：${text.slice(0, 160)}`);
   }
+}
+
+function formatByteCount(value) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let size = Number(value || 0);
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function getSetCookieHeaders(headers) {

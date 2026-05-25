@@ -1,0 +1,13 @@
+{
+  "appId": "io.qzz.r2drive.mobile",
+  "appName": "R2 Cloud Drive",
+  "webDir": "src/renderer",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

@@ -6,7 +6,7 @@
 
 - 基准地址：`https://cloud.junzhen.qzz.io`，例如 `https://cloud.example.com`
 - 数据格式：大多数管理接口使用 JSON；上传和下载接口直接传输二进制文件流。
-- 路径格式：接口中的 `path` 是 R2 对象 Key，不要以 `/` 开头，例如 `docs/a.txt`。
+- 路径格式：接口中的 `path` 是虚拟文件路径，不要以 `/` 开头，例如 `docs/a.txt`；真实 R2 对象会存储在桶根目录，并通过 KV 文件表和目录索引映射。
 - URL 参数必须编码：例如 `shared/测试 1.png` 应写成 `shared%2F%E6%B5%8B%E8%AF%95%201.png`。
 - 如果设置了 `ACCESS_PASSWORD`，除公开接口外都需要先登录并携带 Cookie。
 - 如果未设置 `ACCESS_PASSWORD`，主 API 视为公开访问，`/api/login` 会直接返回 `{ "ok": true }`。
@@ -194,7 +194,7 @@ curl 示例：
 curl -b "$COOKIE" "$BASE/api/list?path=docs"
 ```
 
-注意：当前 `worker.js` 的 `/api/list` 没有过滤文件夹占位对象 `.keep`。如果客户端进入空文件夹后看到 `name` 为 `.keep` 的文件，建议在客户端隐藏它。
+注意：目录来自 KV 文件表和每目录独立的 KV 目录索引，不再依赖 R2 前缀或 `.keep` 占位对象。上传、新建、删除、移动、复制会同步更新索引，减少 KV prefix list 最终一致性导致的刷新延迟。
 
 ### 4.2 下载文件
 
@@ -283,7 +283,7 @@ Content-Type: application/json
 }
 ```
 
-实现细节：R2 没有真实目录，服务端会写入 `docs/new-folder/.keep` 作为占位对象。
+实现细节：文件夹记录写入 KV 文件表，并同步更新父目录索引；不会在 R2 中创建 `.keep` 占位对象。
 
 ### 4.5 删除文件或文件夹
 
@@ -291,7 +291,7 @@ Content-Type: application/json
 DELETE /api/delete?path=文件或文件夹路径
 ```
 
-如果 `path` 是文件夹，服务端会删除该前缀下的所有对象；如果是文件，则删除单个对象。
+如果 `path` 是文件夹，服务端会删除 KV 中该虚拟目录下的所有映射，并同步更新相关目录索引；如果是文件，则删除单个映射。没有其他映射引用的 R2 对象或分布式分片会被清理。
 
 响应：
 
@@ -331,9 +331,43 @@ Content-Type: application/json
 }
 ```
 
-注意：当前 `/api/rename` 只对单个文件或分布式文件 manifest 可靠。文件夹重命名建议使用 WebDAV 的 `MOVE`，或由客户端自行 list、复制、删除。
+注意：`/api/rename` 支持文件和文件夹路径，底层通过 KV 文件表移动映射并同步更新目录索引；真实 R2 对象仍保留在根目录。
 
-### 4.7 获取容量信息
+### 4.7 服务端粘贴
+
+```http
+POST /api/clipboard/paste
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "action": "copy",
+  "items": ["a.txt", "folder-a"],
+  "sourcePath": "docs",
+  "targetPath": "backup"
+}
+```
+
+`action` 可为 `copy` 或 `cut`。`items` 是源目录下的直接文件或文件夹名称，不要带 `/`。
+
+响应：
+
+```json
+{
+  "ok": true,
+  "action": "copy",
+  "sourcePath": "docs",
+  "targetPath": "backup",
+  "results": []
+}
+```
+
+网页端粘贴成功或部分成功后会自动刷新当前目录。客户端软件可根据 `results` 判断单项失败；如果存在失败项，接口会返回 `207`。
+
+### 4.8 获取容量信息
 
 ```http
 GET /api/storage
@@ -471,7 +505,7 @@ Content-Type: application/json
 
 ## 6. 分布式节点大文件上传
 
-如果主控 Worker 配置了存储节点，大文件可以分片上传到多个节点；主控 R2 只保存 manifest 索引。普通客户端可以优先尝试该流程，如果返回 `409 no storage nodes`，再回退到 R2 Multipart。
+超过 100 MiB 的文件可以走分布式上传；主控账号会作为本地存储节点加入分配池，外部存储节点也会一起参与。分片按节点已用容量/总容量均衡分配，并结合主控 KV 中的节点用量估算，避免节点 R2 容量列表延迟导致连续上传分配不准。新增空节点会优先获得分片。主控 R2 根目录保存 manifest 索引，并通过 KV 映射到目标路径。普通客户端可以优先尝试该流程，如果返回 `409`，再回退到 R2 Multipart。
 
 ### 6.1 初始化分布式上传
 
@@ -511,11 +545,11 @@ Content-Type: application/json
 
 ### 6.2 上传分片到节点
 
-对初始化返回的每个 part 执行：
+对初始化返回的每个 part 执行。外部节点分片会带有 `token`，主控账号分片的 `uploadUrl` 是同源 `/api/distributed/main-part?...`，`token` 为空。
 
 ```http
 PUT part.uploadUrl
-Authorization: Bearer part.token
+Authorization: Bearer part.token  # 仅外部节点分片需要
 Content-Type: application/octet-stream
 ```
 
@@ -526,7 +560,7 @@ Content-Type: application/octet-stream
 ```json
 {
   "ok": true,
-  "key": "__r2drive_node_parts/..."
+  "key": "r2drive_node_part_..."
 }
 ```
 
@@ -553,7 +587,7 @@ Content-Type: application/json
 }
 ```
 
-主控会在目标 `path` 写入 manifest。之后下载仍然使用普通下载接口：
+主控会在 R2 根目录写入 manifest，在 KV 文件表和目录索引中映射到目标 `path`，并更新主控账号及外部节点的用量估算。之后下载仍然使用普通下载接口：
 
 ```http
 GET /api/download?path=videos/big.mp4
@@ -603,8 +637,7 @@ GET /api/storage-nodes
       "id": "node-1",
       "name": "节点 1",
       "url": "https://node.example.com",
-      "enabled": true,
-      "weight": 1
+      "enabled": true
     }
   ]
 }
@@ -625,12 +658,11 @@ Content-Type: application/json
   "name": "节点 1",
   "url": "https://node.example.com",
   "token": "节点 STORAGE_NODE_TOKEN",
-  "enabled": true,
-  "weight": 1
+  "enabled": true
 }
 ```
 
-`id` 可省略，省略时服务端生成 UUID。同 ID 会覆盖更新。
+`id` 可省略，省略时服务端生成 UUID。同 ID 会覆盖更新。分片分配不再使用权重字段，而是按节点容量占用率和主控侧用量估算自动均衡。
 
 响应：
 
@@ -641,8 +673,7 @@ Content-Type: application/json
     "id": "node-1",
     "name": "节点 1",
     "url": "https://node.example.com",
-    "enabled": true,
-    "weight": 1
+    "enabled": true
   }
 }
 ```
@@ -750,65 +781,16 @@ GET 返回二进制分片；DELETE 返回：
 
 节点接口带有 CORS 响应头，允许浏览器直传分片。
 
-## 9. WebDAV 接口
+## 9. WebDAV / Nextcloud 兼容
 
-WebDAV 地址：
-
-```text
-https://cloud.junzhen.qzz.io/dav
-```
-
-如果设置了 `ACCESS_PASSWORD`，WebDAV 使用 Basic Auth：
-
-- 用户名：任意
-- 密码：`ACCESS_PASSWORD`
-
-curl 示例：
-
-```bash
-curl -u "user:你的密码" -X PROPFIND "$BASE/dav/" -H "Depth: 1"
-curl -u "user:你的密码" -T "./a.txt" "$BASE/dav/docs/a.txt"
-curl -u "user:你的密码" -o "./a.txt" "$BASE/dav/docs/a.txt"
-```
-
-当前 `worker.js` 实际支持的方法：
-
-- `OPTIONS`
-- `PROPFIND`
-- `GET`
-- `HEAD`
-- `PUT`
-- `MKCOL`
-- `DELETE`
-- `MOVE`
-- `COPY`
-
-示例：创建目录
-
-```bash
-curl -u "user:你的密码" -X MKCOL "$BASE/dav/docs/"
-```
-
-示例：重命名或移动文件夹
-
-```bash
-curl -u "user:你的密码" \
-  -X MOVE \
-  -H "Destination: $BASE/dav/docs2/" \
-  "$BASE/dav/docs/"
-```
-
-注意：当前源码主路由只接入了 `/dav`，未实现 `/remote.php/dav/...` 兼容路径，也未实现 `LOCK`、`UNLOCK`。
+已移除。当前服务端只提供网页和 JSON API，不再提供 /dav、/remote.php/dav/...、PROPFIND、MKCOL、MOVE、COPY 等 WebDAV/Nextcloud 兼容入口。文件夹移动、复制、粘贴、重命名请使用本文档中的 JSON API。
 
 ## 10. 常见状态码
 
 - `200`：请求成功。
-- `201`：WebDAV 创建、上传、复制或移动成功。
-- `204`：WebDAV 删除或 OPTIONS 成功，无响应体。
-- `207`：WebDAV PROPFIND 多状态响应。
+- `204`：节点 CORS 预检或内部删除成功时可能返回，无响应体。
 - `400`：缺少必要参数或请求体格式错误。
 - `401`：未登录、Cookie 无效，或节点 Bearer token 错误。
-- `403`：WebDAV 禁止操作根目录。
 - `404`：文件、目录、节点或上传会话不存在。
 - `409`：目标无效，或分布式上传没有可用存储节点。
 - `502`：主控测试节点失败。
@@ -822,10 +804,8 @@ curl -u "user:你的密码" \
 3. 小文件用 `POST /api/upload?path=...`。
 4. 大文件先尝试分布式上传；如果返回 `409`，使用 R2 Multipart。
 5. 下载统一用 `GET /api/download?path=...`；大文件客户端建议使用 `Range` 分段下载，并按 `Content-Range`/`Content-Length` 校验每段长度。
-6. 删除、新建文件夹、重命名分别调用 `/api/delete`、`/api/mkdir`、`/api/rename`。
+6. 删除、新建文件夹、重命名分别调用 `/api/delete`、`/api/mkdir`、`/api/rename`；复制/剪切粘贴调用 `/api/clipboard/paste`。
 
 兼容性优先的客户端：
 
-1. 直接使用 WebDAV `/dav`。
-2. Basic Auth 密码填写 `ACCESS_PASSWORD`。
-3. 文件夹移动、复制优先用 WebDAV `MOVE` / `COPY`，比 `/api/rename` 更适合目录级操作。
+WebDAV / Nextcloud 兼容入口已移除，请直接对接 JSON API。文件夹移动、复制、粘贴和重命名均由 KV 文件表完成，客户端不需要枚举 R2 前缀。

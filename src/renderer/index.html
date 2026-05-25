@@ -4,24 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>R2 Cloud Drive</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
     <link rel="stylesheet" href="./styles.css">
+    <style id="customBrandStyle"></style>
   </head>
   <body>
     <div class="window-frame">
       <header class="window-titlebar">
         <div id="titlebarDrag" class="titlebar-drag">
-          <div class="titlebar-mark">R2</div>
+          <div id="titlebarMark" class="titlebar-mark">R2</div>
           <span>R2 Cloud Drive</span>
         </div>
         <div class="window-controls">
           <button id="windowMinimizeButton" class="window-control" type="button" title="最小化">
-            <span class="icon minimize-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">remove</span>
           </button>
           <button id="windowMaximizeButton" class="window-control" type="button" title="最大化">
-            <span class="icon maximize-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">crop_square</span>
           </button>
           <button id="windowCloseButton" class="window-control close-window" type="button" title="关闭">
-            <span class="icon close-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">close</span>
           </button>
         </div>
       </header>
@@ -30,7 +33,7 @@
       <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">R2</div>
+          <div id="brandMark" class="brand-mark">R2</div>
           <div class="brand-copy">
             <div class="brand-title">Cloud Drive</div>
             <div id="serverStatus" class="muted ellipsis">未连接</div>
@@ -38,35 +41,43 @@
         </div>
 
         <button id="newButton" class="new-button" type="button" aria-haspopup="menu" aria-expanded="false">
-          <span class="icon plus-icon" aria-hidden="true"></span>
+          <span class="material-icons-round" aria-hidden="true">add</span>
           <span>新建</span>
         </button>
         <div id="newMenu" class="surface-menu new-menu hidden" role="menu" aria-label="新建操作">
           <button id="newFolderAction" type="button" role="menuitem">
-            <span class="icon folder-plus-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">create_new_folder</span>
             <span>新建文件夹</span>
           </button>
           <button id="newUploadAction" type="button" role="menuitem">
-            <span class="icon upload-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">upload</span>
             <span>上传文件</span>
           </button>
         </div>
 
         <nav class="nav" aria-label="主导航">
           <button class="nav-item active" data-view="drive" type="button">
-            <span class="icon drive-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">folder_open</span>
             <span>我的云盘</span>
           </button>
           <button class="nav-item" data-view="album" type="button">
-            <span class="icon album-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">photo_library</span>
             <span>相册</span>
           </button>
           <button class="nav-item" data-view="quick" type="button">
-            <span class="icon quick-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">star</span>
             <span>快速访问</span>
           </button>
+          <button class="nav-item" data-view="backup" type="button">
+            <span class="material-icons-round" aria-hidden="true">backup</span>
+            <span>自动备份</span>
+          </button>
+          <button class="nav-item" data-view="transfers" type="button">
+            <span class="material-icons-round" aria-hidden="true">sync_alt</span>
+            <span>传输列表</span>
+          </button>
           <button class="nav-item" data-view="nodes" type="button">
-            <span class="icon nodes-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">hub</span>
             <span>存储节点查看</span>
           </button>
         </nav>
@@ -86,7 +97,7 @@
       <main class="workspace">
         <header class="topbar">
           <label class="search-box">
-            <span class="icon search-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">search</span>
             <input id="searchInput" type="search" placeholder="搜索当前视图">
           </label>
           <div class="header-actions">
@@ -95,7 +106,7 @@
               <span class="theme-moon" aria-hidden="true"></span>
             </button>
             <button id="settingsButton" class="circle-button" type="button" title="设置">
-              <span class="icon settings-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">settings</span>
             </button>
           </div>
         </header>
@@ -107,43 +118,70 @@
           </div>
           <div id="driveToolbar" class="toolbar">
             <button id="backButton" class="icon-button" type="button" title="返回">
-              <span class="icon back-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">arrow_back</span>
             </button>
             <button id="refreshButton" class="icon-button" type="button" title="刷新">
-              <span class="icon refresh-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">refresh</span>
             </button>
             <div class="segmented-control" aria-label="文件视图">
-              <button id="fileListModeButton" class="active" type="button" title="列表视图">
-                <span class="icon list-icon" aria-hidden="true"></span>
+            <button id="fileListModeButton" class="active" type="button" title="列表视图">
+                <span class="material-icons-round" aria-hidden="true">view_list</span>
               </button>
               <button id="fileGridModeButton" type="button" title="网格视图">
-                <span class="icon grid-icon" aria-hidden="true"></span>
+                <span class="material-icons-round" aria-hidden="true">grid_view</span>
               </button>
             </div>
             <button id="uploadButton" class="primary" type="button">
-              <span class="icon upload-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">upload</span>
               <span>上传</span>
             </button>
             <button id="mkdirButton" class="secondary" type="button">
-              <span class="icon folder-plus-icon" aria-hidden="true"></span>
-              <span>文件夹</span>
+              <span class="material-icons-round" aria-hidden="true">create_new_folder</span>
+              <span>新建文件夹</span>
             </button>
           </div>
           <div id="albumToolbar" class="toolbar hidden">
             <button id="albumBackButton" class="icon-button" type="button" title="返回">
-              <span class="icon back-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">arrow_back</span>
             </button>
             <button id="albumRefreshButton" class="icon-button" type="button" title="刷新">
-              <span class="icon refresh-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">refresh</span>
             </button>
             <button id="albumUploadButton" class="primary" type="button">
-              <span class="icon upload-icon" aria-hidden="true"></span>
+              <span class="material-icons-round" aria-hidden="true">upload</span>
               <span>上传到相册</span>
+            </button>
+            <button id="albumBackupButton" class="secondary" type="button">
+              <span class="material-icons-round" aria-hidden="true">backup</span>
+              <span>相册备份</span>
             </button>
           </div>
         </section>
 
         <section id="driveView" class="view">
+          <div class="action-bar" id="actionBar">
+            <span class="action-bar-count" id="actionBarCount">未选中</span>
+            <div class="action-bar-divider"></div>
+            <button class="action-btn" id="copySelectedButton" type="button" title="复制" disabled>
+              <span class="material-icons-round" aria-hidden="true">content_copy</span><span>复制</span>
+            </button>
+            <button class="action-btn" id="cutSelectedButton" type="button" title="剪切" disabled>
+              <span class="material-icons-round" aria-hidden="true">content_cut</span><span>剪切</span>
+            </button>
+            <button class="action-btn" id="pasteButton" type="button" title="粘贴" disabled>
+              <span class="material-icons-round" aria-hidden="true">content_paste</span><span>粘贴</span>
+            </button>
+            <div class="action-bar-divider"></div>
+            <button class="action-btn" id="renameSelectedButton" type="button" title="重命名" disabled>
+              <span class="material-icons-round" aria-hidden="true">drive_file_rename_outline</span><span>重命名</span>
+            </button>
+            <button class="action-btn" id="downloadSelectedButton" type="button" title="下载" disabled>
+              <span class="material-icons-round" aria-hidden="true">download</span><span>下载</span>
+            </button>
+            <button class="action-btn danger" id="deleteSelectedButton" type="button" title="删除" disabled>
+              <span class="material-icons-round" aria-hidden="true">delete_outline</span><span>删除</span>
+            </button>
+          </div>
           <div id="driveTableWrap" class="table-wrap">
             <table>
               <thead>
@@ -182,13 +220,93 @@
           <div id="quickEmpty" class="empty-state hidden">暂无快速访问内容</div>
         </section>
 
+        <section id="backupView" class="view hidden">
+          <div class="split-layout backup-layout">
+            <section class="panel">
+              <div class="section-head">
+                <h2>本机文件夹</h2>
+                <button id="backupSelectFolderButton" class="primary" type="button">
+                  <span class="material-icons-round" aria-hidden="true">drive_folder_upload</span>
+                  <span>添加文件夹</span>
+                </button>
+              </div>
+              <div id="backupJobList" class="backup-job-list"></div>
+              <div id="backupEmpty" class="empty-state hidden">暂无自动备份文件夹</div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h2>备份设置</h2>
+                <button id="backupRunAllButton" class="secondary" type="button">
+                  <span class="material-icons-round" aria-hidden="true">sync</span>
+                  <span>立即备份全部</span>
+                </button>
+              </div>
+              <form class="form-grid">
+                <label class="checkbox-row">
+                  <input id="backupAutoStart" type="checkbox">
+                  开机自启动
+                </label>
+                <label>
+                  自动备份间隔（分钟）
+                  <input id="backupIntervalInput" type="number" min="1" max="1440" step="1" value="15">
+                </label>
+                <button id="backupSaveSettingsButton" class="primary" type="button">保存设置</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="transfersView" class="view hidden">
+          <div class="split-layout transfer-layout">
+            <section class="panel">
+              <div class="section-head">
+                <h2>实时上传</h2>
+                <button id="clearDoneUploadsButton" class="secondary" type="button">清理完成项</button>
+              </div>
+              <div id="uploadTransferList" class="transfer-list"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h2>实时下载</h2>
+                <button id="clearDoneDownloadsButton" class="secondary" type="button">清理完成项</button>
+              </div>
+              <div id="downloadTransferList" class="transfer-list"></div>
+            </section>
+          </div>
+          <section class="panel transfer-settings-panel">
+            <div class="section-head">
+              <h2>下载路径</h2>
+            </div>
+            <form id="transferDownloadForm" class="form-grid">
+              <label>
+                默认下载路径
+                <div class="path-row">
+                  <input id="transferDownloadDirInput" type="text" placeholder="未设置" readonly>
+                  <button id="transferSelectDownloadDirButton" class="secondary" type="button">选择</button>
+                </div>
+              </label>
+              <div class="button-row">
+                <button class="primary" type="submit">保存路径</button>
+                <button id="transferClearDownloadDirButton" class="secondary" type="button">清除</button>
+              </div>
+            </form>
+          </section>
+          <section class="panel download-history-panel">
+            <div class="section-head">
+              <h2>已下载文件</h2>
+              <button id="clearDownloadHistoryButton" class="secondary" type="button">清空记录</button>
+            </div>
+            <div id="downloadHistoryList" class="transfer-list"></div>
+          </section>
+        </section>
+
         <section id="nodesView" class="view hidden">
           <div class="split-layout">
             <section class="panel">
               <div class="section-head">
                 <h2>存储节点</h2>
                 <button id="nodesRefreshButton" class="secondary" type="button">
-                  <span class="icon refresh-icon" aria-hidden="true"></span>
+                  <span class="material-icons-round" aria-hidden="true">refresh</span>
                   <span>刷新</span>
                 </button>
               </div>
@@ -213,10 +331,6 @@
                   Token
                   <input id="nodeToken" type="password" placeholder="新增或更新时填写">
                 </label>
-                <label>
-                  权重
-                  <input id="nodeWeight" type="number" min="1" step="1" value="1">
-                </label>
                 <label class="checkbox-row">
                   <input id="nodeEnabled" type="checkbox" checked>
                   启用节点
@@ -236,9 +350,20 @@
             <form id="configForm" class="form-grid">
               <label>
                 API 基准地址
-                <input id="baseUrlInput" type="url" placeholder="https://cloud.junzhen.qzz.io" required>
+                <input id="baseUrlInput" type="url" placeholder="https://cloud.junzhen.qzz.io">
               </label>
               <button class="primary" type="submit">保存地址</button>
+            </form>
+            <form id="brandForm" class="form-grid">
+              <label>
+                标题图标 HTML
+                <textarea id="brandHtmlInput" rows="4" placeholder="R2"></textarea>
+              </label>
+              <label>
+                自定义 CSS
+                <textarea id="brandCssInput" rows="7" placeholder=".brand-mark, .titlebar-mark { background: #1a73e8; }"></textarea>
+              </label>
+              <button class="primary" type="submit">保存外观</button>
             </form>
             <form id="downloadForm" class="form-grid">
               <label>
@@ -266,13 +391,16 @@
           </section>
         </section>
 
-        <section class="transfers">
-          <div class="section-head compact">
-            <h2>传输队列</h2>
-            <button id="clearDoneButton" class="secondary" type="button">清理完成项</button>
-          </div>
-          <div id="transferList" class="transfer-list"></div>
-        </section>
+        <button id="transferBubble" class="transfer-bubble" type="button" title="传输列表" aria-label="打开传输列表">
+          <span class="material-icons-round transfer-idle-icon" aria-hidden="true">cloud</span>
+          <span class="material-icons-round transfer-done-icon" aria-hidden="true">check</span>
+          <span class="transfer-bubble-icons" aria-hidden="true">
+            <span class="material-icons-round transfer-download-icon">file_download</span>
+            <span class="material-icons-round transfer-upload-icon">file_upload</span>
+          </span>
+          <span id="transferBubbleCount" class="transfer-bubble-count">0/0</span>
+          <span id="transferBubbleProgress" class="transfer-bubble-progress">0%/0%</span>
+        </button>
       </main>
       </div>
     </div>
@@ -281,7 +409,7 @@
       <div class="popover-head">
         <strong>容量详情</strong>
         <button id="storageCloseButton" class="circle-button small" type="button" title="关闭">
-          <span class="icon close-icon" aria-hidden="true"></span>
+          <span class="material-icons-round" aria-hidden="true">close</span>
         </button>
       </div>
       <div id="storageNodeList" class="storage-node-list"></div>
@@ -310,20 +438,20 @@
         <div id="viewerTitle" class="viewer-title ellipsis"></div>
         <div class="viewer-actions">
           <button id="viewerDownloadButton" class="primary" type="button">
-            <span class="icon download-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">download</span>
             <span>下载</span>
           </button>
           <button id="viewerCloseButton" class="circle-button" type="button" title="关闭">
-            <span class="icon close-icon" aria-hidden="true"></span>
+            <span class="material-icons-round" aria-hidden="true">close</span>
           </button>
         </div>
       </div>
       <button id="viewerPrevButton" class="viewer-nav prev" type="button" title="上一张">
-        <span class="icon back-icon" aria-hidden="true"></span>
+        <span class="material-icons-round" aria-hidden="true">arrow_back</span>
       </button>
       <div id="viewerStage" class="viewer-stage"></div>
       <button id="viewerNextButton" class="viewer-nav next" type="button" title="下一张">
-        <span class="icon back-icon" aria-hidden="true"></span>
+        <span class="material-icons-round" aria-hidden="true">arrow_forward</span>
       </button>
       <div id="viewerMeta" class="viewer-meta"></div>
     </div>
@@ -347,6 +475,7 @@
 
     <div id="contextMenu" class="surface-menu context-menu hidden" role="menu"></div>
     <div id="toast" class="toast hidden"></div>
+    <script src="./mobile-bridge.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>
