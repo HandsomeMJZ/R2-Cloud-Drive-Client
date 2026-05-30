@@ -1,3 +1,4 @@
+//by HandsomeMJZ
 const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
