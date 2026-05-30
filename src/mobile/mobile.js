@@ -1,4 +1,9 @@
 const ALBUM_TARGET = '相册/手机相册';
+const DIRECT_UPLOAD_LIMIT = 512 * 1024;
+const DISTRIBUTED_UPLOAD_LIMIT = DIRECT_UPLOAD_LIMIT;
+const CHUNK_SIZE = 32 * 1024 * 1024;
+const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = 10000;
 const els = {
   baseUrlInput: document.querySelector('#baseUrlInput'),
   passwordInput: document.querySelector('#passwordInput'),
@@ -117,6 +122,27 @@ async function listRemoteFiles(remoteDir) {
 }
 
 async function uploadFile(file, remotePath) {
+  const targetPath = normalizeRemotePath(remotePath);
+  const plan = createUploadPlan(file.size || 0);
+
+  if ((file.size || 0) <= DIRECT_UPLOAD_LIMIT) {
+    return uploadSimpleFile(file, targetPath);
+  }
+
+  if ((file.size || 0) > DISTRIBUTED_UPLOAD_LIMIT) {
+    try {
+      return await uploadDistributedFile(file, targetPath, plan);
+    } catch (error) {
+      if (!isDistributedFallbackError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return uploadMultipartFile(file, targetPath, plan);
+}
+
+async function uploadSimpleFile(file, remotePath) {
   const url = makeUrl(`/api/upload?path=${encodeURIComponent(remotePath)}`);
   const response = await fetch(url, {
     method: 'POST',
@@ -129,7 +155,120 @@ async function uploadFile(file, remotePath) {
   });
   captureCookie(response);
   if (!response.ok) {
-    throw new Error(`上传失败 ${response.status}: ${await response.text()}`);
+    throw httpError(response.status, await response.text());
+  }
+  return response.text();
+}
+
+async function uploadDistributedFile(file, remotePath, plan) {
+  let sessionId = '';
+  try {
+    const init = await requestJson('/api/distributed/init', {
+      method: 'POST',
+      body: {
+        path: remotePath,
+        size: file.size,
+        contentType: file.type || 'application/octet-stream',
+        chunkSize: plan.chunkSize,
+        parts: plan.partCount
+      }
+    });
+
+    sessionId = init.sessionId || '';
+    const parts = Array.isArray(init.parts) ? init.parts.slice().sort((a, b) => a.partNumber - b.partNumber) : [];
+    if (!init.ok || !sessionId || !parts.length) {
+      throw new Error('分布式上传初始化响应无效');
+    }
+
+    for (const part of parts) {
+      const partNumber = Number(part.partNumber);
+      const partSize = Number(part.size || 0);
+      if (!partNumber || partSize <= 0 || !part.uploadUrl) {
+        throw new Error('分布式上传分片信息无效');
+      }
+
+      const start = (partNumber - 1) * plan.chunkSize;
+      const response = await fetch(makeUrl(part.uploadUrl), {
+        method: 'PUT',
+        headers: {
+          Cookie: state.cookie,
+          'Content-Type': 'application/octet-stream'
+        },
+        body: file.slice(start, start + partSize),
+        credentials: 'include'
+      });
+      captureCookie(response);
+      if (!response.ok) {
+        throw httpError(response.status, await response.text());
+      }
+    }
+
+    return requestJson('/api/distributed/complete', {
+      method: 'POST',
+      body: { sessionId }
+    });
+  } catch (error) {
+    if (sessionId) {
+      await requestJson('/api/distributed/abort', {
+        method: 'POST',
+        body: { sessionId }
+      }).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function uploadMultipartFile(file, remotePath, plan) {
+  const init = await requestJson('/api/multipart/init', {
+    method: 'POST',
+    body: {
+      path: remotePath,
+      contentType: file.type || 'application/octet-stream'
+    }
+  });
+  if (!init.uploadId) {
+    throw new Error('R2 分片上传初始化响应无效');
+  }
+
+  const parts = [];
+  try {
+    for (let partNumber = 1; partNumber <= plan.partCount; partNumber += 1) {
+      const start = (partNumber - 1) * plan.chunkSize;
+      const partSize = Math.min(plan.chunkSize, file.size - start);
+      const response = await fetch(makeUrl(`/api/multipart/part?path=${encodeURIComponent(remotePath)}&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${partNumber}`), {
+        method: 'POST',
+        headers: {
+          Cookie: state.cookie,
+          'Content-Type': 'application/octet-stream'
+        },
+        body: file.slice(start, start + partSize),
+        credentials: 'include'
+      });
+      captureCookie(response);
+      const text = await response.text();
+      if (!response.ok) {
+        throw httpError(response.status, text);
+      }
+      parts.push(text ? JSON.parse(text) : {});
+    }
+
+    return requestJson('/api/multipart/complete', {
+      method: 'POST',
+      body: {
+        path: remotePath,
+        uploadId: init.uploadId,
+        parts
+      }
+    });
+  } catch (error) {
+    await requestJson('/api/multipart/abort', {
+      method: 'POST',
+      body: {
+        path: remotePath,
+        uploadId: init.uploadId
+      }
+    }).catch(() => {});
+    throw error;
   }
 }
 
@@ -147,9 +286,42 @@ async function requestJson(route, options = {}) {
   captureCookie(response);
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}${text ? `: ${text.slice(0, 160)}` : ''}`);
+    throw httpError(response.status, text);
   }
   return text ? JSON.parse(text) : {};
+}
+
+function createUploadPlan(size) {
+  const strategy = size > DISTRIBUTED_UPLOAD_LIMIT
+    ? 'distributed'
+    : size > DIRECT_UPLOAD_LIMIT
+      ? 'multipart'
+      : 'simple';
+  let chunkSize = CHUNK_SIZE;
+  let partCount = Math.max(1, Math.ceil(size / chunkSize));
+
+  if (partCount > MAX_MULTIPART_PARTS) {
+    chunkSize = Math.ceil(size / MAX_MULTIPART_PARTS);
+    chunkSize = Math.min(MAX_CHUNK_SIZE, Math.max(CHUNK_SIZE, chunkSize));
+    partCount = Math.ceil(size / chunkSize);
+  }
+
+  if (partCount > MAX_MULTIPART_PARTS || chunkSize > MAX_CHUNK_SIZE) {
+    throw new Error('文件过大，超过当前分片上传限制');
+  }
+
+  return { strategy, chunkSize, partCount };
+}
+
+function httpError(status, body) {
+  const error = new Error(`HTTP ${status}${body ? `: ${String(body).slice(0, 160)}` : ''}`);
+  error.status = status;
+  error.body = body || '';
+  return error;
+}
+
+function isDistributedFallbackError(error) {
+  return error?.status === 409 || (error?.status === 400 && /distributed|threshold|below/i.test(String(error.body || error.message || '')));
 }
 
 function captureCookie(response) {

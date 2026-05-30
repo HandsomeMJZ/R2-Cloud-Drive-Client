@@ -178,7 +178,7 @@
             <button class="action-btn" id="downloadSelectedButton" type="button" title="下载" disabled>
               <span class="material-icons-round" aria-hidden="true">download</span><span>下载</span>
             </button>
-            <button class="action-btn danger" id="deleteSelectedButton" type="button" title="删除" disabled>
+            <button class="action-btn danger" id="deleteSelectedButton" type="button" title="删除 / 清理孤儿文件">
               <span class="material-icons-round" aria-hidden="true">delete_outline</span><span>删除</span>
             </button>
           </div>
@@ -261,14 +261,20 @@
             <section class="panel">
               <div class="section-head">
                 <h2>实时上传</h2>
-                <button id="clearDoneUploadsButton" class="secondary" type="button">清理完成项</button>
+                <div class="button-row">
+                  <button id="retryFailedUploadsButton" class="secondary" type="button">重试失败</button>
+                  <button id="clearDoneUploadsButton" class="secondary" type="button">清理完成项</button>
+                </div>
               </div>
               <div id="uploadTransferList" class="transfer-list"></div>
             </section>
             <section class="panel">
               <div class="section-head">
                 <h2>实时下载</h2>
-                <button id="clearDoneDownloadsButton" class="secondary" type="button">清理完成项</button>
+                <div class="button-row">
+                  <button id="retryFailedDownloadsButton" class="secondary" type="button">重试失败</button>
+                  <button id="clearDoneDownloadsButton" class="secondary" type="button">清理完成项</button>
+                </div>
               </div>
               <div id="downloadTransferList" class="transfer-list"></div>
             </section>
@@ -352,7 +358,10 @@
                 API 基准地址
                 <input id="baseUrlInput" type="url" placeholder="https://cloud.junzhen.qzz.io">
               </label>
-              <button class="primary" type="submit">保存地址</button>
+              <div class="button-row">
+                <button class="primary" type="submit">保存地址</button>
+                <button id="testConnectionButton" class="secondary" type="button">测试连接</button>
+              </div>
             </form>
             <form id="brandForm" class="form-grid">
               <label>
@@ -364,6 +373,28 @@
                 <textarea id="brandCssInput" rows="7" placeholder=".brand-mark, .titlebar-mark { background: #1a73e8; }"></textarea>
               </label>
               <button class="primary" type="submit">保存外观</button>
+            </form>
+            <form id="desktopBehaviorForm" class="form-grid">
+              <label>
+                关闭窗口时
+                <select id="closeBehaviorSelect">
+                  <option value="ask">每次询问</option>
+                  <option value="tray">最小化到托盘</option>
+                  <option value="quit">退出程序</option>
+                </select>
+              </label>
+              <label>
+                最小化按钮
+                <select id="minimizeBehaviorSelect">
+                  <option value="taskbar">最小化到任务栏</option>
+                  <option value="tray">隐藏到托盘</option>
+                </select>
+              </label>
+              <label class="checkbox-row">
+                <input id="startHiddenToTrayInput" type="checkbox">
+                启动后隐藏到托盘
+              </label>
+              <button class="primary" type="submit">保存桌面行为</button>
             </form>
             <form id="downloadForm" class="form-grid">
               <label>
@@ -470,6 +501,37 @@
             <button id="dialogConfirmButton" class="primary" type="submit">确定</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <div id="orphanModal" class="modal-backdrop hidden">
+      <div class="modal orphan-modal" role="dialog" aria-modal="true" aria-labelledby="orphanTitle">
+        <h2 id="orphanTitle">孤儿文件扫描</h2>
+        <p id="orphanDesc" class="muted">孤儿文件是指存储在 R2 中但没有对应数据库记录的文件，可能是上传中断或异常导致。</p>
+        <div id="orphanStatus" class="orphan-status">
+          <span class="orphan-status-text">点击下方按钮开始扫描</span>
+        </div>
+        <div id="orphanListWrap" class="orphan-list-wrap hidden">
+          <div class="orphan-list-head">
+            <label class="checkbox-row orphan-select-all">
+              <input id="orphanSelectAll" type="checkbox" checked>
+              全选
+            </label>
+            <span id="orphanCount" class="muted"></span>
+          </div>
+          <div id="orphanList" class="orphan-list"></div>
+        </div>
+        <div class="button-row orphan-actions">
+          <button id="orphanScanButton" class="primary" type="button">
+            <span class="material-icons-round" aria-hidden="true">search</span>
+            <span>开始扫描</span>
+          </button>
+          <button id="orphanCleanButton" class="danger-action hidden" type="button">
+            <span class="material-icons-round" aria-hidden="true">delete_forever</span>
+            <span>一键清理</span>
+          </button>
+          <button id="orphanCloseButton" class="secondary" type="button">关闭</button>
+        </div>
       </div>
     </div>
 

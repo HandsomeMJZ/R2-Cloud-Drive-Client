@@ -4,6 +4,11 @@
   }
 
   const PHOTO_SYNC = window.Capacitor.Plugins?.PhotoSync;
+  const DIRECT_UPLOAD_LIMIT = 512 * 1024;
+  const DISTRIBUTED_UPLOAD_LIMIT = DIRECT_UPLOAD_LIMIT;
+  const CHUNK_SIZE = 32 * 1024 * 1024;
+  const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
+  const MAX_MULTIPART_PARTS = 10000;
   const MOBILE_UPLOAD_CONCURRENCY = 3;
   const uploadTokens = new Map();
   const listeners = {
@@ -14,6 +19,9 @@
     baseUrl: localStorage.getItem('r2mobile:baseUrl') || '',
     sessionCookie: localStorage.getItem('r2mobile:sessionCookie') || '',
     downloadDir: '',
+    closeBehavior: 'ask',
+    minimizeBehavior: 'taskbar',
+    startHiddenToTray: false,
     customBrandHtml: '',
     customBrandCss: '',
     albumSyncEnabled: localStorage.getItem('r2mobile:albumSyncEnabled') === 'true',
@@ -25,6 +33,7 @@
   window.r2Drive = {
     getConfig,
     setConfig,
+    testConnection,
     selectDownloadDir: async () => ({ canceled: true }),
     login,
     logout,
@@ -34,6 +43,10 @@
     storage: () => requestJson('/api/storage'),
     mkdir: (remotePath) => requestJson('/api/mkdir', { method: 'POST', body: { path: normalizeRemotePath(remotePath) } }),
     deletePath: (remotePath) => requestJson(`/api/delete?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`, { method: 'DELETE' }),
+    deleteBatch: (paths) => requestJson('/api/delete-batch', {
+      method: 'POST',
+      body: { paths: (Array.isArray(paths) ? paths : [paths]).map(normalizeRemotePath).filter(Boolean) }
+    }),
     rename: (from, to) => requestJson('/api/rename', {
       method: 'POST',
       body: { from: normalizeRemotePath(from), to: normalizeRemotePath(to) }
@@ -48,6 +61,11 @@
     nodesSave: (node) => requestJson('/api/storage-nodes', { method: 'POST', body: node }),
     nodesDelete: (id) => requestJson(`/api/storage-nodes?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
     nodesTest: (id) => requestJson(`/api/storage-nodes/test?id=${encodeURIComponent(id)}`, { method: 'POST' }),
+    scanOrphans: () => requestJson('/api/orphan-cleanup', { method: 'POST', body: { action: 'scan' } }),
+    cleanOrphans: (keys) => requestJson('/api/orphan-cleanup', {
+      method: 'POST',
+      body: { action: 'clean', keys: Array.isArray(keys) ? keys : [keys] }
+    }),
 
     clipboardGet: async () => ({ items: [], action: 'copy', sourcePath: '' }),
     clipboardSet: async () => ({ ok: true }),
@@ -67,6 +85,7 @@
     openPath: async () => {},
     openExternal: (url) => window.open(url, '_blank'),
     minimizeWindow: async () => {},
+    hideToTray: async () => {},
     toggleMaximizeWindow: async () => false,
     closeWindow: async () => {},
 
@@ -547,6 +566,9 @@
     return {
       baseUrl: state.baseUrl,
       downloadDir: '',
+      closeBehavior: state.closeBehavior,
+      minimizeBehavior: state.minimizeBehavior,
+      startHiddenToTray: state.startHiddenToTray,
       customBrandHtml: state.customBrandHtml,
       customBrandCss: state.customBrandCss,
       hasSession: Boolean(state.sessionCookie)
@@ -565,7 +587,26 @@
     if (typeof config.customBrandCss === 'string') {
       state.customBrandCss = config.customBrandCss;
     }
+    if (['ask', 'tray', 'quit'].includes(config.closeBehavior)) {
+      state.closeBehavior = config.closeBehavior;
+    }
+    if (['taskbar', 'tray'].includes(config.minimizeBehavior)) {
+      state.minimizeBehavior = config.minimizeBehavior;
+    }
+    if (typeof config.startHiddenToTray === 'boolean') {
+      state.startHiddenToTray = config.startHiddenToTray;
+    }
     return getConfig();
+  }
+
+  async function testConnection() {
+    const startedAt = Date.now();
+    const storage = await requestJson('/api/storage');
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      storage
+    };
   }
 
   async function login(password) {
@@ -619,7 +660,16 @@
         total: file.size
       });
       try {
-        await uploadBlob(file, target);
+        await uploadBlob(file, target, (progress) => {
+          emitTransfer({
+            id: transferId,
+            type: 'upload',
+            name: file.name,
+            remotePath: target,
+            status: 'running',
+            ...progress
+          });
+        });
         emitTransfer({
           id: transferId,
           type: 'upload',
@@ -803,12 +853,40 @@
     captureCookie(response);
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ''}`);
+      throw httpError(response.status, text);
     }
     return text ? JSON.parse(text) : {};
   }
 
-  async function uploadBlob(blob, remotePath) {
+  async function uploadBlob(blob, remotePath, onProgress) {
+    const targetPath = normalizeRemotePath(remotePath);
+    const plan = createUploadPlan(blob.size || 0);
+
+    onProgress?.({
+      transferred: 0,
+      total: blob.size,
+      phase: '准备上传',
+      strategy: plan.strategy
+    });
+
+    if ((blob.size || 0) <= DIRECT_UPLOAD_LIMIT) {
+      return uploadSimpleBlob(blob, targetPath, onProgress);
+    }
+
+    if ((blob.size || 0) > DISTRIBUTED_UPLOAD_LIMIT) {
+      try {
+        return await uploadDistributedBlob(blob, targetPath, plan, onProgress);
+      } catch (error) {
+        if (!isDistributedFallbackError(error)) {
+          throw error;
+        }
+      }
+    }
+
+    return uploadMultipartBlob(blob, targetPath, plan, onProgress);
+  }
+
+  async function uploadSimpleBlob(blob, remotePath, onProgress) {
     const response = await fetch(makeUrl(`/api/upload?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`), {
       method: 'POST',
       headers: {
@@ -820,9 +898,150 @@
     });
     captureCookie(response);
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 180)}`);
+      throw httpError(response.status, await response.text());
     }
+    onProgress?.({
+      transferred: blob.size,
+      total: blob.size,
+      phase: '普通上传',
+      strategy: 'simple'
+    });
     return response.text();
+  }
+
+  async function uploadDistributedBlob(blob, remotePath, plan, onProgress) {
+    let sessionId = '';
+    try {
+      const init = await requestJson('/api/distributed/init', {
+        method: 'POST',
+        body: {
+          path: remotePath,
+          size: blob.size,
+          contentType: blob.type || 'application/octet-stream',
+          chunkSize: plan.chunkSize,
+          parts: plan.partCount
+        }
+      });
+
+      sessionId = init.sessionId || '';
+      const parts = Array.isArray(init.parts) ? init.parts.slice().sort((a, b) => a.partNumber - b.partNumber) : [];
+      if (!init.ok || !sessionId || !parts.length) {
+        throw new Error('分布式上传初始化响应无效');
+      }
+
+      let completed = 0;
+      for (const part of parts) {
+        const partNumber = Number(part.partNumber);
+        const partSize = Number(part.size || 0);
+        if (!partNumber || partSize <= 0 || !part.uploadUrl) {
+          throw new Error('分布式上传分片信息无效');
+        }
+
+        const start = (partNumber - 1) * plan.chunkSize;
+        const chunk = blob.slice(start, start + partSize);
+        const response = await fetch(makeUrl(part.uploadUrl), {
+          method: 'PUT',
+          headers: {
+            ...cookieHeaders(),
+            'Content-Type': 'application/octet-stream'
+          },
+          body: chunk,
+          credentials: 'include'
+        });
+        captureCookie(response);
+        if (!response.ok) {
+          throw httpError(response.status, await response.text());
+        }
+        completed += partSize;
+        onProgress?.({
+          transferred: Math.min(completed, blob.size),
+          total: blob.size,
+          phase: `分布式上传 ${partNumber}/${plan.partCount}`,
+          strategy: 'distributed',
+          partNumber,
+          partCount: plan.partCount
+        });
+      }
+
+      await requestJson('/api/distributed/complete', {
+        method: 'POST',
+        body: { sessionId }
+      });
+      return { ok: true, strategy: 'distributed' };
+    } catch (error) {
+      if (sessionId) {
+        await requestJson('/api/distributed/abort', {
+          method: 'POST',
+          body: { sessionId }
+        }).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  async function uploadMultipartBlob(blob, remotePath, plan, onProgress) {
+    const init = await requestJson('/api/multipart/init', {
+      method: 'POST',
+      body: {
+        path: remotePath,
+        contentType: blob.type || 'application/octet-stream'
+      }
+    });
+
+    if (!init.uploadId) {
+      throw new Error('R2 分片上传初始化响应无效');
+    }
+
+    const parts = [];
+    let completed = 0;
+    try {
+      for (let partNumber = 1; partNumber <= plan.partCount; partNumber += 1) {
+        const start = (partNumber - 1) * plan.chunkSize;
+        const partSize = Math.min(plan.chunkSize, blob.size - start);
+        const response = await fetch(makeUrl(`/api/multipart/part?path=${encodeURIComponent(remotePath)}&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${partNumber}`), {
+          method: 'POST',
+          headers: {
+            ...cookieHeaders(),
+            'Content-Type': 'application/octet-stream'
+          },
+          body: blob.slice(start, start + partSize),
+          credentials: 'include'
+        });
+        captureCookie(response);
+        const text = await response.text();
+        if (!response.ok) {
+          throw httpError(response.status, text);
+        }
+        parts.push(text ? JSON.parse(text) : {});
+        completed += partSize;
+        onProgress?.({
+          transferred: Math.min(completed, blob.size),
+          total: blob.size,
+          phase: `R2 分片上传 ${partNumber}/${plan.partCount}`,
+          strategy: 'multipart',
+          partNumber,
+          partCount: plan.partCount
+        });
+      }
+
+      return requestJson('/api/multipart/complete', {
+        method: 'POST',
+        body: {
+          path: remotePath,
+          uploadId: init.uploadId,
+          parts
+        }
+      });
+    } catch (error) {
+      await requestJson('/api/multipart/abort', {
+        method: 'POST',
+        body: {
+          path: remotePath,
+          uploadId: init.uploadId
+        }
+      }).catch(() => {});
+      throw error;
+    }
   }
 
   async function ensureNativePermission() {
@@ -904,6 +1123,43 @@
       }
     });
     await Promise.all(workers);
+  }
+
+  function createUploadPlan(size) {
+    const strategy = size > DISTRIBUTED_UPLOAD_LIMIT
+      ? 'distributed'
+      : size > DIRECT_UPLOAD_LIMIT
+        ? 'multipart'
+        : 'simple';
+    let chunkSize = CHUNK_SIZE;
+    let partCount = Math.max(1, Math.ceil(size / chunkSize));
+
+    if (partCount > MAX_MULTIPART_PARTS) {
+      chunkSize = Math.ceil(size / MAX_MULTIPART_PARTS);
+      chunkSize = Math.min(MAX_CHUNK_SIZE, Math.max(CHUNK_SIZE, chunkSize));
+      partCount = Math.ceil(size / chunkSize);
+    }
+
+    if (partCount > MAX_MULTIPART_PARTS || chunkSize > MAX_CHUNK_SIZE) {
+      throw new Error('文件过大，超过当前分片上传限制');
+    }
+
+    return {
+      strategy,
+      chunkSize,
+      partCount
+    };
+  }
+
+  function httpError(status, body) {
+    const error = new Error(`HTTP ${status}${body ? `: ${String(body).slice(0, 180)}` : ''}`);
+    error.status = status;
+    error.body = body || '';
+    return error;
+  }
+
+  function isDistributedFallbackError(error) {
+    return error?.status === 409 || (error?.status === 400 && /distributed|threshold|below/i.test(String(error.body || error.message || '')));
   }
 
   function makeUrl(route) {

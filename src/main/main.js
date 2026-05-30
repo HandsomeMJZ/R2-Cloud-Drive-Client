@@ -1,8 +1,13 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { R2DriveClient, normalizeRemotePath } = require('./apiClient');
 const { BackupManager } = require('./backupManager');
+
+// 必须在 app.whenReady() 之前设置，否则 Windows 任务栏图标无法正确显示
+if (process.platform === 'win32') {
+  app.setAppUserModelId('io.qzz.r2drive.client');
+}
 
 let mainWindow;
 let tray;
@@ -11,7 +16,12 @@ let backupManager;
 let isQuitting = false;
 let closePromptOpen = false;
 const activeDownloads = new Map();
+const systemTransfers = new Map();
 const MAX_PARALLEL_UPLOADS = 3;
+
+function iconPath(fileName) {
+  return path.join(__dirname, '../../assets/icons', fileName);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -23,6 +33,8 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#f8fafd',
     title: 'R2 Cloud Drive',
+    icon: iconPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    show: client?.getConfig().startHiddenToTray !== true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
@@ -81,10 +93,72 @@ function createWindow() {
 }
 
 function emitTransfer(payload) {
+  updateSystemTransferState(payload);
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
   mainWindow.webContents.send('transfer:event', payload);
+}
+
+function updateSystemTransferState(payload) {
+  if (!payload?.id) {
+    return;
+  }
+
+  if (payload.status === 'running') {
+    systemTransfers.set(payload.id, {
+      ...(systemTransfers.get(payload.id) || {}),
+      ...payload
+    });
+  } else if (['done', 'error', 'canceled'].includes(payload.status)) {
+    systemTransfers.delete(payload.id);
+  }
+
+  updateTaskbarProgress();
+
+  if (payload.status === 'done' && ['download', 'upload'].includes(payload.type)) {
+    showTransferNotification(payload);
+  }
+}
+
+function updateTaskbarProgress() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const running = Array.from(systemTransfers.values()).filter((item) => item.status === 'running');
+  if (!running.length) {
+    mainWindow.setProgressBar(-1);
+    return;
+  }
+
+  const knownTotal = running.filter((item) => Number(item.total) > 0);
+  if (!knownTotal.length) {
+    mainWindow.setProgressBar(2);
+    return;
+  }
+
+  const transferred = knownTotal.reduce((sum, item) => sum + Number(item.transferred || 0), 0);
+  const total = knownTotal.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  mainWindow.setProgressBar(Math.max(0, Math.min(1, transferred / total)));
+}
+
+function showTransferNotification(payload) {
+  if (!Notification.isSupported()) {
+    return;
+  }
+
+  const notification = new Notification({
+    title: payload.type === 'download' ? '下载完成' : '上传完成',
+    body: payload.name || payload.remotePath || 'R2 Cloud Drive',
+    icon: iconPath('icon.png')
+  });
+
+  if (payload.type === 'download' && payload.localPath) {
+    notification.on('click', () => shell.showItemInFolder(payload.localPath));
+  }
+
+  notification.show();
 }
 
 function emitBackup(payload) {
@@ -115,14 +189,7 @@ function createTray() {
     return tray;
   }
 
-  const svg = [
-    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
-    '<rect width="32" height="32" rx="7" fill="#1a73e8"/>',
-    '<path fill="#fff" d="M8 20.5c-2.2 0-4-1.8-4-4 0-1.9 1.4-3.6 3.2-3.9A7 7 0 0 1 20.3 10a5.4 5.4 0 0 1 1.2 10.5H8z"/>',
-    '<path fill="#34a853" d="M17 13h8v3h-8zM17 18h8v3h-8z"/>',
-    '</svg>'
-  ].join('');
-  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`);
+  const icon = nativeImage.createFromPath(iconPath(process.platform === 'win32' ? 'icon.ico' : 'tray.png'));
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
   tray.setToolTip('R2 Cloud Drive');
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -287,7 +354,7 @@ function uniqueLocalPath(directory, fileName) {
 }
 
 async function resolveDownloadTarget(defaultName) {
-  const downloadDir = client.getConfig().downloadDir;
+  const downloadDir = client.getConfig().downloadDir || app.getPath('downloads');
   if (downloadDir) {
     return {
       canceled: false,
@@ -307,6 +374,8 @@ function registerIpc() {
   ipcMain.handle('config:get', () => client.getConfig());
 
   ipcMain.handle('config:set', (event, config) => client.setConfig(config || {}));
+
+  ipcMain.handle('config:test-connection', () => client.testConnection());
 
   ipcMain.handle('config:select-download-dir', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -380,6 +449,8 @@ function registerIpc() {
 
   ipcMain.handle('drive:delete', (event, remotePath) => client.delete(remotePath));
 
+  ipcMain.handle('drive:delete-batch', (event, paths) => client.deleteBatch(paths));
+
   ipcMain.handle('drive:rename', (event, payload) => client.rename(payload.from, payload.to));
 
   ipcMain.handle('drive:select-upload', async () => {
@@ -400,12 +471,13 @@ function registerIpc() {
       const remotePath = joinRemotePath(remoteDir, fileName);
       const transferId = makeTransferId('upload');
 
-      emitTransfer({
-        id: transferId,
-        type: 'upload',
-        name: fileName,
-        remotePath,
-        status: 'running',
+        emitTransfer({
+          id: transferId,
+          type: 'upload',
+          name: fileName,
+          filePath,
+          remotePath,
+          status: 'running',
         phase: '准备上传',
         transferred: 0,
         total: 0
@@ -414,6 +486,7 @@ function registerIpc() {
       const emitProgress = makeProgressEmitter(transferId, {
         type: 'upload',
         name: fileName,
+        filePath,
         remotePath,
         status: 'running'
       });
@@ -432,6 +505,7 @@ function registerIpc() {
           id: transferId,
           type: 'upload',
           name: fileName,
+          filePath,
           remotePath,
           status: 'done',
           phase: '上传完成'
@@ -443,6 +517,7 @@ function registerIpc() {
           id: transferId,
           type: 'upload',
           name: fileName,
+          filePath,
           remotePath,
           status: 'error',
           phase: lastUploadPhase ? `${lastUploadPhase}失败` : '上传失败',
@@ -568,6 +643,10 @@ function registerIpc() {
 
   ipcMain.handle('drive:nodes-test', (event, id) => client.testStorageNode(id));
 
+  ipcMain.handle('drive:orphans-scan', () => client.scanOrphans());
+
+  ipcMain.handle('drive:orphans-clean', (event, keys) => client.cleanOrphans(keys));
+
   ipcMain.handle('clipboard:get', (event, id) => client.clipboardGet(id));
 
   ipcMain.handle('clipboard:set', (event, payload) => client.clipboardSet(payload.items, payload.action, payload.sourcePath, payload.id));
@@ -587,6 +666,16 @@ function registerIpc() {
   });
 
   ipcMain.handle('window:minimize', () => {
+    const minimizeBehavior = client?.getConfig().minimizeBehavior || 'taskbar';
+    if (minimizeBehavior === 'tray') {
+      hideToTray();
+      return 'tray';
+    }
+    mainWindow?.minimize();
+    return 'taskbar';
+  });
+
+  ipcMain.handle('window:hide-to-tray', () => {
     hideToTray();
   });
 
@@ -610,11 +699,14 @@ function registerIpc() {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   client = new R2DriveClient(path.join(app.getPath('userData'), 'config.json'));
-  backupManager = new BackupManager(client, emitBackup);
+  backupManager = new BackupManager(client, emitBackup, emitTransfer);
   applyAutoLaunch(client.getConfig().backupAutoStart);
   registerIpc();
   createTray();
   createWindow();
+  if (client.getConfig().startHiddenToTray) {
+    hideToTray();
+  }
   backupManager.start();
 
   app.on('activate', () => {

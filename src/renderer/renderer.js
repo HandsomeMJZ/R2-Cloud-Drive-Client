@@ -160,9 +160,14 @@ function cacheElements() {
     albumBackupButton: document.querySelector('#albumBackupButton'),
     configForm: document.querySelector('#configForm'),
     baseUrlInput: document.querySelector('#baseUrlInput'),
+    testConnectionButton: document.querySelector('#testConnectionButton'),
     brandForm: document.querySelector('#brandForm'),
     brandHtmlInput: document.querySelector('#brandHtmlInput'),
     brandCssInput: document.querySelector('#brandCssInput'),
+    desktopBehaviorForm: document.querySelector('#desktopBehaviorForm'),
+    closeBehaviorSelect: document.querySelector('#closeBehaviorSelect'),
+    minimizeBehaviorSelect: document.querySelector('#minimizeBehaviorSelect'),
+    startHiddenToTrayInput: document.querySelector('#startHiddenToTrayInput'),
     downloadForm: document.querySelector('#downloadForm'),
     downloadDirInput: document.querySelector('#downloadDirInput'),
     selectDownloadDirButton: document.querySelector('#selectDownloadDirButton'),
@@ -208,6 +213,8 @@ function cacheElements() {
     downloadHistoryList: document.querySelector('#downloadHistoryList'),
     clearDoneUploadsButton: document.querySelector('#clearDoneUploadsButton'),
     clearDoneDownloadsButton: document.querySelector('#clearDoneDownloadsButton'),
+    retryFailedUploadsButton: document.querySelector('#retryFailedUploadsButton'),
+    retryFailedDownloadsButton: document.querySelector('#retryFailedDownloadsButton'),
     clearDownloadHistoryButton: document.querySelector('#clearDownloadHistoryButton'),
     nodesRefreshButton: document.querySelector('#nodesRefreshButton'),
     nodesList: document.querySelector('#nodesList'),
@@ -218,7 +225,18 @@ function cacheElements() {
     nodeName: document.querySelector('#nodeName'),
     nodeUrl: document.querySelector('#nodeUrl'),
     nodeToken: document.querySelector('#nodeToken'),
-    nodeEnabled: document.querySelector('#nodeEnabled')
+    nodeEnabled: document.querySelector('#nodeEnabled'),
+    orphanModal: document.querySelector('#orphanModal'),
+    orphanTitle: document.querySelector('#orphanTitle'),
+    orphanDesc: document.querySelector('#orphanDesc'),
+    orphanStatus: document.querySelector('#orphanStatus'),
+    orphanListWrap: document.querySelector('#orphanListWrap'),
+    orphanSelectAll: document.querySelector('#orphanSelectAll'),
+    orphanCount: document.querySelector('#orphanCount'),
+    orphanList: document.querySelector('#orphanList'),
+    orphanScanButton: document.querySelector('#orphanScanButton'),
+    orphanCleanButton: document.querySelector('#orphanCleanButton'),
+    orphanCloseButton: document.querySelector('#orphanCloseButton')
   });
 }
 
@@ -293,6 +311,8 @@ function bindEvents() {
   els.transferBubble.addEventListener('click', () => setView('transfers'));
   els.clearDoneUploadsButton.addEventListener('click', () => clearDoneTransfers('upload'));
   els.clearDoneDownloadsButton.addEventListener('click', () => clearDoneTransfers('download'));
+  els.retryFailedUploadsButton?.addEventListener('click', () => retryFailedTransfers('upload'));
+  els.retryFailedDownloadsButton?.addEventListener('click', () => retryFailedTransfers('download'));
   els.clearDownloadHistoryButton.addEventListener('click', clearDownloadHistory);
   els.dialogCancelButton.addEventListener('click', () => closeDialog(null));
   els.dialogModal.addEventListener('click', (event) => {
@@ -301,6 +321,22 @@ function bindEvents() {
     }
   });
   els.dialogForm.addEventListener('submit', submitDialog);
+
+  // 孤儿文件扫描弹窗
+  els.orphanScanButton.addEventListener('click', scanAndShowOrphans);
+  els.orphanCleanButton.addEventListener('click', executeOrphanCleanup);
+  els.orphanCloseButton.addEventListener('click', closeOrphanModal);
+  els.orphanModal.addEventListener('click', (event) => {
+    if (event.target === els.orphanModal) {
+      closeOrphanModal();
+    }
+  });
+  els.orphanSelectAll.addEventListener('change', () => {
+    const checked = els.orphanSelectAll.checked;
+    els.orphanList.querySelectorAll('.orphan-item-check').forEach((cb) => {
+      cb.checked = checked;
+    });
+  });
   document.addEventListener('keydown', (event) => {
     if (!els.mediaViewer.classList.contains('hidden')) {
       if (event.key === 'Escape') {
@@ -313,11 +349,26 @@ function bindEvents() {
       return;
     }
 
+    // 全局快捷键：Ctrl+A 全选，Escape 取消选择
+    if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
+      if (['drive', 'album'].includes(state.view) && document.activeElement !== els.searchInput) {
+        event.preventDefault();
+        selectAllVisible();
+      }
+      return;
+    }
+
     if (event.key === 'Escape') {
       hideNewMenu();
       hideContextMenu();
       closeDialog(null);
+      closeOrphanModal();
       hideStoragePopover();
+      if (state.selectedItems.size > 0) {
+        state.selectedItems.clear();
+        updateSelectionVisuals();
+        updateActionBar();
+      }
     }
   });
 
@@ -325,10 +376,16 @@ function bindEvents() {
     event.preventDefault();
     await saveBaseUrl(els.baseUrlInput.value);
   });
+  els.testConnectionButton?.addEventListener('click', testConnection);
 
   els.brandForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     await saveBrandCustomization();
+  });
+
+  els.desktopBehaviorForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveDesktopBehavior();
   });
 
   els.downloadForm.addEventListener('submit', async (event) => {
@@ -425,6 +482,15 @@ function renderConfig() {
   els.transferDownloadDirInput.value = state.config?.downloadDir || '';
   els.brandHtmlInput.value = state.config?.customBrandHtml || '';
   els.brandCssInput.value = state.config?.customBrandCss || '';
+  if (els.closeBehaviorSelect) {
+    els.closeBehaviorSelect.value = state.config?.closeBehavior || 'ask';
+  }
+  if (els.minimizeBehaviorSelect) {
+    els.minimizeBehaviorSelect.value = state.config?.minimizeBehavior || 'taskbar';
+  }
+  if (els.startHiddenToTrayInput) {
+    els.startHiddenToTrayInput.checked = Boolean(state.config?.startHiddenToTray);
+  }
   els.serverStatus.textContent = displayBaseUrlHost(baseUrl) || '未连接';
   applyBrandCustomization();
 }
@@ -435,6 +501,18 @@ async function saveBaseUrl(baseUrl) {
   toast('地址已保存');
 }
 
+async function testConnection() {
+  await runTask(async () => {
+    const baseUrl = els.baseUrlInput.value.trim();
+    if (baseUrl && baseUrl !== state.config?.baseUrl) {
+      state.config = await api.setConfig({ baseUrl });
+      renderConfig();
+    }
+    const result = await api.testConnection();
+    toast(`连接正常，延迟 ${Math.max(1, Math.round(result.latencyMs || 0))} ms`);
+  });
+}
+
 async function saveBrandCustomization() {
   state.config = await api.setConfig({
     customBrandHtml: els.brandHtmlInput.value,
@@ -442,6 +520,16 @@ async function saveBrandCustomization() {
   });
   renderConfig();
   toast('外观已保存');
+}
+
+async function saveDesktopBehavior() {
+  state.config = await api.setConfig({
+    closeBehavior: els.closeBehaviorSelect.value,
+    minimizeBehavior: els.minimizeBehaviorSelect.value,
+    startHiddenToTray: els.startHiddenToTrayInput.checked
+  });
+  renderConfig();
+  toast('桌面行为已保存');
 }
 
 function applyBrandCustomization() {
@@ -1330,6 +1418,12 @@ function makeFileCard(options) {
   card.addEventListener('click', (event) => {
     handleDriveItemClick(event, options.item, card, options.onOpen);
   });
+  card.addEventListener('dblclick', (event) => {
+    if (event.target.closest('button')) {
+      return;
+    }
+    options.onOpen();
+  });
   card.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       options.onOpen();
@@ -1450,6 +1544,12 @@ function makeRow(options) {
   row.addEventListener('click', (event) => {
     handleDriveItemClick(event, options.item, row, options.onOpen);
   });
+  row.addEventListener('dblclick', (event) => {
+    if (event.target.closest('button')) {
+      return;
+    }
+    options.onOpen();
+  });
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1554,11 +1654,8 @@ function handleDriveItemClick(event, item, element, onOpen) {
   if (event.target.closest('button')) {
     return;
   }
-  if (event.ctrlKey || event.metaKey) {
-    toggleSelection(item, element);
-    return;
-  }
-  onOpen();
+  // 单击切换选中状态（多选模式）
+  toggleSelection(item, element);
 }
 
 function updateActionBar() {
@@ -1570,13 +1667,72 @@ function updateActionBar() {
     ? `已选中 ${count} 项`
     : clipCount
       ? `${state.clipboard.action === 'cut' ? '剪切' : '复制'} ${clipCount} 项待粘贴`
-      : '未选中';
+      : '单击选择文件，双击打开';
   els.copySelectedButton.disabled = count === 0;
   els.cutSelectedButton.disabled = count === 0;
   els.renameSelectedButton.disabled = count !== 1;
   els.downloadSelectedButton.disabled = count === 0;
-  els.deleteSelectedButton.disabled = count === 0;
+  // 删除按钮始终可用：无选中时打开孤儿文件扫描
+  els.deleteSelectedButton.disabled = false;
   els.pasteButton.disabled = !canPaste;
+}
+
+function selectAllVisible() {
+  const items = getCurrentViewItems();
+  for (const item of items) {
+    const key = selectedItemKey(item);
+    if (!state.selectedItems.has(key)) {
+      state.selectedItems.set(key, {
+        name: item.name,
+        type: item.type === 'folder' ? 'folder' : 'file'
+      });
+    }
+  }
+  updateSelectionVisuals();
+  updateActionBar();
+}
+
+function getCurrentViewItems() {
+  const items = [];
+  if (state.view === 'drive') {
+    for (const name of filterNamed(state.folders)) {
+      items.push({ type: 'folder', name });
+    }
+    for (const file of filterNamed(state.files)) {
+      items.push({ type: 'file', name: file.name });
+    }
+  } else if (state.view === 'album') {
+    for (const name of filterNamed(state.albumFolders)) {
+      items.push({ type: 'folder', name });
+    }
+    for (const file of filterNamed(state.albumFiles)) {
+      items.push({ type: 'file', name: file.name });
+    }
+  }
+  return items;
+}
+
+function updateSelectionVisuals() {
+  // 更新列表视图中的行
+  els.fileRows.querySelectorAll('tr').forEach((row) => {
+    const nameEl = row.querySelector('.file-name');
+    if (nameEl) {
+      const name = nameEl.textContent;
+      const isFolder = row.querySelector('.file-kind-folder');
+      const key = selectedItemKey({ type: isFolder ? 'folder' : 'file', name });
+      row.classList.toggle('selected', state.selectedItems.has(key));
+    }
+  });
+  // 更新网格视图中的卡片
+  els.fileGrid.querySelectorAll('.file-card').forEach((card) => {
+    const nameEl = card.querySelector('.file-card-name');
+    if (nameEl) {
+      const name = nameEl.textContent;
+      const isFolder = card.querySelector('.file-kind-folder');
+      const key = selectedItemKey({ type: isFolder ? 'folder' : 'file', name });
+      card.classList.toggle('selected', state.selectedItems.has(key));
+    }
+  });
 }
 
 async function renameSelectedItem() {
@@ -1601,6 +1757,8 @@ async function downloadSelectedItems() {
 async function deleteSelectedItems() {
   const items = selectedItems();
   if (!items.length) {
+    // 无选中文件时，打开孤儿文件扫描清理
+    showOrphanCleanup();
     return;
   }
   const ok = await openConfirmDialog({
@@ -1614,8 +1772,13 @@ async function deleteSelectedItems() {
   }
 
   await runTask(async () => {
-    for (const item of items) {
-      await api.deletePath(joinRemote(state.currentPath, item.name));
+    const paths = items.map((item) => joinRemote(state.currentPath, item.name));
+    if (typeof api.deleteBatch === 'function') {
+      await api.deleteBatch(paths);
+    } else {
+      for (const remotePath of paths) {
+        await api.deletePath(remotePath);
+      }
     }
     state.selectedItems.clear();
     await refreshAfterMutation();
@@ -2279,11 +2442,58 @@ function makeTransferItem(transfer) {
   if (transfer.type === 'download' && transfer.status === 'running' && transfer.phase !== '正在取消') {
     item.append(actionButton('取消', () => cancelDownload(transfer.id), 'danger'));
   }
+  if (transfer.status === 'error' && canRetryTransfer(transfer)) {
+    item.append(actionButton('重试', () => retryTransfer(transfer)));
+  }
   if (transfer.localPath && transfer.status === 'done') {
     item.append(actionButton('定位', () => api.openPath(transfer.localPath)));
   }
   item.append(progress);
   return item;
+}
+
+function canRetryTransfer(transfer) {
+  if (transfer.type === 'upload') {
+    return Boolean(transfer.filePath && transfer.remotePath);
+  }
+  if (transfer.type === 'download') {
+    return Boolean(transfer.remotePath && transfer.name);
+  }
+  return false;
+}
+
+async function retryTransfer(transfer) {
+  state.transfers.delete(transfer.id);
+  renderTransfers();
+
+  if (transfer.type === 'upload') {
+    const parent = parentPath(transfer.remotePath || '');
+    const results = await api.uploadFiles([transfer.filePath], parent);
+    const failed = results.filter((result) => !result.ok);
+    toast(failed.length ? '重试上传失败' : '已重新开始上传');
+    if (!failed.length) {
+      await refreshAfterMutation();
+    }
+    return;
+  }
+
+  if (transfer.type === 'download') {
+    await downloadFile(transfer.remotePath, transfer.name);
+  }
+}
+
+async function retryFailedTransfers(type) {
+  const failed = [...state.transfers.values()]
+    .filter((transfer) => transfer.type === type && transfer.status === 'error' && canRetryTransfer(transfer));
+
+  if (!failed.length) {
+    toast('暂无可重试的失败任务');
+    return;
+  }
+
+  for (const transfer of failed) {
+    await retryTransfer(transfer);
+  }
 }
 
 function renderDownloadHistory() {
@@ -2694,11 +2904,31 @@ function setBusy(isBusy) {
 }
 
 function handleError(error) {
-  const message = error?.message || String(error);
+  const message = friendlyErrorMessage(error);
   if (message.includes('401')) {
     showAuth();
   }
   toast(message);
+}
+
+function friendlyErrorMessage(error) {
+  const raw = error?.message || String(error);
+  if (/401/.test(raw)) {
+    return '登录状态已失效，请重新登录';
+  }
+  if (/ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|timeout|timed out|连接服务器超时/i.test(raw)) {
+    return '连接服务器超时，请检查 API 地址、网络代理、防火墙或存储节点配置';
+  }
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|无法解析服务器地址/i.test(raw)) {
+    return '无法解析服务器地址，请检查 API 地址和 DNS 网络';
+  }
+  if (/ECONNREFUSED|服务器拒绝连接/i.test(raw)) {
+    return '服务器拒绝连接，请确认服务端已启动且端口可访问';
+  }
+  if (/fetch failed|network|socket hang up|ECONNRESET|网络连接中断/i.test(raw)) {
+    return '网络请求失败，请检查 API 地址、网络连接或存储节点配置';
+  }
+  return raw;
 }
 
 function showAuth() {
@@ -2929,4 +3159,148 @@ function formatProgress(transfer) {
     return `${transfer.phase || '处理中'}${speed}`;
   }
   return `${progressPercent(transfer)}% · ${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}${speed}`;
+}
+
+// ── 孤儿文件扫描清理 ──
+
+let orphanScanResult = null;
+
+function showOrphanCleanup() {
+  orphanScanResult = null;
+  els.orphanTitle.textContent = '孤儿文件扫描';
+  els.orphanDesc.classList.remove('hidden');
+  els.orphanStatus.innerHTML = '<span class="orphan-status-text">点击下方按钮开始扫描</span>';
+  els.orphanListWrap.classList.add('hidden');
+  els.orphanList.replaceChildren();
+  els.orphanScanButton.classList.remove('hidden');
+  els.orphanCleanButton.classList.add('hidden');
+  els.orphanModal.classList.remove('hidden');
+}
+
+function closeOrphanModal() {
+  els.orphanModal.classList.add('hidden');
+  orphanScanResult = null;
+}
+
+async function scanAndShowOrphans() {
+  els.orphanScanButton.disabled = true;
+  els.orphanStatus.innerHTML = '<span class="orphan-status-text">正在扫描孤儿文件…</span>';
+
+  try {
+    const result = await api.scanOrphans();
+    orphanScanResult = result;
+
+    const orphans = Array.isArray(result?.orphans) ? result.orphans : [];
+    const totalSize = Number(result?.totalSize || 0);
+
+    if (!orphans.length) {
+      els.orphanStatus.innerHTML = '<span class="orphan-status-text" style="color:var(--green)">✅ 未发现孤儿文件，系统状态良好</span>';
+      els.orphanListWrap.classList.add('hidden');
+      els.orphanScanButton.classList.remove('hidden');
+      els.orphanCleanButton.classList.add('hidden');
+    } else {
+      els.orphanStatus.innerHTML = '<span class="orphan-status-text">发现 <strong>' + orphans.length + '</strong> 个孤儿文件，共占用 <strong>' + formatBytes(totalSize) + '</strong></span>';
+      els.orphanListWrap.classList.remove('hidden');
+      els.orphanScanButton.classList.add('hidden');
+      els.orphanCleanButton.classList.remove('hidden');
+      renderOrphanList(orphans);
+    }
+  } catch (error) {
+    els.orphanStatus.innerHTML = '<span class="orphan-status-text" style="color:var(--danger)">扫描失败：' + friendlyErrorMessage(error) + '</span>';
+  } finally {
+    els.orphanScanButton.disabled = false;
+  }
+}
+
+function renderOrphanList(orphans) {
+  els.orphanList.replaceChildren();
+  els.orphanCount.textContent = '共 ' + orphans.length + ' 项';
+  els.orphanSelectAll.checked = true;
+
+  for (let i = 0; i < orphans.length; i++) {
+    const item = orphans[i];
+    const key = item?.key || item?.name || '';
+    const size = Number(item?.size || 0);
+    const lastModified = item?.lastModified || '';
+
+    const row = document.createElement('label');
+    row.className = 'orphan-item';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'orphan-item-check';
+    checkbox.checked = true;
+    checkbox.dataset.key = key;
+    checkbox.addEventListener('change', function () {
+      const all = els.orphanList.querySelectorAll('.orphan-item-check');
+      const checked = els.orphanList.querySelectorAll('.orphan-item-check:checked');
+      els.orphanSelectAll.checked = checked.length === all.length;
+    });
+
+    const info = document.createElement('div');
+    info.className = 'orphan-item-info';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'orphan-item-name ellipsis';
+    nameEl.textContent = key;
+
+    const meta = document.createElement('span');
+    meta.className = 'orphan-item-meta muted';
+    meta.textContent = formatBytes(size) + (lastModified ? ' · ' + formatDate(lastModified) : '');
+
+    info.append(nameEl, meta);
+    row.append(checkbox, info);
+    els.orphanList.appendChild(row);
+  }
+}
+
+async function executeOrphanCleanup() {
+  const checkboxes = els.orphanList.querySelectorAll('.orphan-item-check:checked');
+  if (!checkboxes.length) {
+    toast('请至少选择一个孤儿文件');
+    return;
+  }
+
+  const keys = [];
+  for (let i = 0; i < checkboxes.length; i++) {
+    const key = checkboxes[i].dataset.key;
+    if (key) {
+      keys.push(key);
+    }
+  }
+  if (!keys.length) {
+    return;
+  }
+
+  // 暂时隐藏孤儿弹窗，避免遮挡确认对话框（两个 modal-backdrop z-index 相同，后出现的会遮挡先出现的）
+  els.orphanModal.classList.add('hidden');
+
+  const ok = await openConfirmDialog({
+    title: '清理孤儿文件',
+    message: '确定要删除选中的 ' + keys.length + ' 个孤儿文件吗？此操作不可撤销。',
+    confirmText: '删除',
+    danger: true
+  });
+
+  // 恢复孤儿弹窗
+  els.orphanModal.classList.remove('hidden');
+
+  if (!ok) {
+    return;
+  }
+
+  els.orphanCleanButton.disabled = true;
+  els.orphanStatus.innerHTML = '<span class="orphan-status-text">正在清理孤儿文件…</span>';
+
+  try {
+    const result = await api.cleanOrphans(keys);
+    const cleaned = Number(result?.cleaned || result?.deleted || keys.length);
+    toast('已清理 ' + cleaned + ' 个孤儿文件');
+
+    await scanAndShowOrphans();
+  } catch (error) {
+    els.orphanStatus.innerHTML = '<span class="orphan-status-text" style="color:var(--danger)">清理失败：' + friendlyErrorMessage(error) + '</span>';
+  } finally {
+    els.orphanCleanButton.disabled = false;
+  }
 }

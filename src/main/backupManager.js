@@ -9,12 +9,14 @@ const MEDIA_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif', '.heic', '.heif', '.svg',
   '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.wmv', '.flv', '.3gp'
 ]);
-const BACKUP_UPLOAD_CONCURRENCY = 3;
+const BACKUP_UPLOAD_CONCURRENCY = 8;
+const SCAN_CONCURRENCY = 16;
 
 class BackupManager {
-  constructor(client, emit) {
+  constructor(client, emitBackup, emitTransfer) {
     this.client = client;
-    this.emit = emit;
+    this.emitBackup = emitBackup;
+    this.emitTransfer = emitTransfer || (() => {});
     this.runningJobs = new Set();
     this.remoteDirs = new Set();
     this.timer = null;
@@ -218,22 +220,30 @@ class BackupManager {
     const remoteFiles = await this.listRemoteFiles(remoteDir);
     const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
 
+    const subDirs = [];
+    const files = [];
+
     for (const entry of entries) {
       if (entry.isSymbolicLink()) {
         continue;
       }
-
       const nextRelative = path.join(relativeDir, entry.name);
       if (entry.isDirectory()) {
-        await this.scanDirectory(job, nextRelative, uploadPlan, stats);
-        continue;
+        subDirs.push(nextRelative);
+      } else if (entry.isFile()) {
+        files.push(nextRelative);
       }
-      if (!entry.isFile()) {
-        continue;
-      }
-
-      await this.planBackupFile(job, nextRelative, remoteFiles, uploadPlan, stats);
     }
+
+    // Scan subdirectories in parallel with concurrency limit
+    await runWithConcurrency(subDirs, SCAN_CONCURRENCY, (nextRelative) =>
+      this.scanDirectory(job, nextRelative, uploadPlan, stats)
+    );
+
+    // Plan backup for all files in this directory in parallel
+    await runWithConcurrency(files, SCAN_CONCURRENCY, (nextRelative) =>
+      this.planBackupFile(job, nextRelative, remoteFiles, uploadPlan, stats)
+    );
   }
 
   async planBackupFile(job, relativeFile, remoteFiles, uploadPlan, stats) {
@@ -278,65 +288,73 @@ class BackupManager {
         pending: uploadPlan.length
       }
     });
-    return;
-
-    if (remoteFile && Number.isFinite(remoteUploaded) && remoteUploaded >= localMtime) {
-      stats.skipped += 1;
-      this.emitStatus(job, {
-        status: 'running',
-        phase: '跳过未修改文件',
-        fileName: remoteName,
-        stats
-      });
-      return;
-    }
-
-    const remotePath = joinRemote(job.remotePath, toRemotePath(relativeFile));
-    this.emitStatus(job, {
-      status: 'running',
-      phase: remoteFile ? '上传已修改文件' : '上传新文件',
-      fileName: remoteName,
-      remotePath,
-      stats
-    });
-
-    try {
-      await this.client.uploadFile(localFile, remotePath, (progress) => {
-        this.emitStatus(job, {
-          status: 'running',
-          phase: progress.phase || '上传中',
-          fileName: remoteName,
-          remotePath,
-          transferred: progress.transferred,
-          total: progress.total,
-          stats
-        });
-      });
-      stats.uploaded += 1;
-    } catch (error) {
-      stats.failed += 1;
-      this.emitStatus(job, {
-        status: 'running',
-        phase: '文件上传失败',
-        fileName: remoteName,
-        remotePath,
-        message: error.message,
-        stats
-      });
-    }
   }
 
   async uploadBackupItem(job, item, stats) {
-    try {
-      this.emitStatus(job, {
-        status: 'running',
-        phase: item.isModified ? 'Uploading modified file' : 'Uploading new file',
-        fileName: item.remoteName,
-        remotePath: item.remotePath,
-        stats
-      });
+    const transferId = makeTransferId('backup');
+    const baseTransferPayload = {
+      id: transferId,
+      type: 'upload',
+      name: item.remoteName,
+      filePath: item.localFile,
+      remotePath: item.remotePath,
+      status: 'running'
+    };
 
+    // Emit transfer start
+    this.emitTransfer({
+      ...baseTransferPayload,
+      phase: '准备上传',
+      transferred: 0,
+      total: 0
+    });
+
+    this.emitStatus(job, {
+      status: 'running',
+      phase: item.isModified ? 'Uploading modified file' : 'Uploading new file',
+      fileName: item.remoteName,
+      remotePath: item.remotePath,
+      stats
+    });
+
+    // Throttled progress emitter for transfer events (max ~120ms interval)
+    let lastTransferEmit = 0;
+    let transferTimer = null;
+    let pendingTransferPayload = null;
+
+    const flushTransfer = () => {
+      if (transferTimer) {
+        clearTimeout(transferTimer);
+        transferTimer = null;
+      }
+      if (pendingTransferPayload) {
+        this.emitTransfer(pendingTransferPayload);
+        pendingTransferPayload = null;
+        lastTransferEmit = Date.now();
+      }
+    };
+
+    const emitTransferProgress = (payload) => {
+      const now = Date.now();
+      if (now - lastTransferEmit >= 120) {
+        if (transferTimer) {
+          clearTimeout(transferTimer);
+          transferTimer = null;
+        }
+        this.emitTransfer(payload);
+        lastTransferEmit = now;
+        pendingTransferPayload = null;
+      } else {
+        pendingTransferPayload = payload;
+        if (!transferTimer) {
+          transferTimer = setTimeout(flushTransfer, Math.max(16, 120 - (now - lastTransferEmit)));
+        }
+      }
+    };
+
+    try {
       await this.client.uploadFile(item.localFile, item.remotePath, (progress) => {
+        // Emit backup status (existing behavior)
         this.emitStatus(job, {
           status: 'running',
           phase: progress.phase || 'Uploading',
@@ -346,10 +364,29 @@ class BackupManager {
           total: progress.total,
           stats
         });
+
+        // Emit transfer progress (throttled, for transfer list + bubble)
+        emitTransferProgress({
+          ...baseTransferPayload,
+          phase: progress.phase || '上传中',
+          transferred: progress.transferred,
+          total: progress.total
+        });
       });
+
+      flushTransfer();
       stats.uploaded += 1;
+
+      // Emit transfer done
+      this.emitTransfer({
+        ...baseTransferPayload,
+        status: 'done',
+        phase: '上传完成'
+      });
     } catch (error) {
+      flushTransfer();
       stats.failed += 1;
+
       this.emitStatus(job, {
         status: 'running',
         phase: 'Upload failed',
@@ -357,6 +394,14 @@ class BackupManager {
         remotePath: item.remotePath,
         message: error.message,
         stats
+      });
+
+      // Emit transfer error
+      this.emitTransfer({
+        ...baseTransferPayload,
+        status: 'error',
+        phase: '上传失败',
+        message: error.message
       });
     }
   }
@@ -399,7 +444,7 @@ class BackupManager {
   }
 
   emitStatus(job, payload) {
-    this.emit({
+    this.emitBackup({
       type: 'backup',
       jobId: job.id,
       jobName: job.name,
@@ -476,6 +521,10 @@ async function runWithConcurrency(items, limit, worker) {
 
 function makeJobId() {
   return `backup-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function makeTransferId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function windowSetTimeout(handler, ms) {

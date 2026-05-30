@@ -5,8 +5,8 @@ const path = require('node:path');
 const { pipeline } = require('node:stream');
 
 const DEFAULT_BASE_URL = '';
-const SIMPLE_UPLOAD_LIMIT = 90 * 1024 * 1024;
-const DISTRIBUTED_UPLOAD_LIMIT = 100 * 1024 * 1024;
+const DIRECT_UPLOAD_LIMIT = 512 * 1024;
+const DISTRIBUTED_UPLOAD_LIMIT = DIRECT_UPLOAD_LIMIT;
 const CHUNK_SIZE = 32 * 1024 * 1024;
 const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
 const MAX_MULTIPART_PARTS = 10000;
@@ -33,6 +33,8 @@ class R2DriveClient {
       backupIntervalMinutes: 15,
       backupAutoStart: false,
       closeBehavior: 'ask',
+      minimizeBehavior: 'taskbar',
+      startHiddenToTray: false,
       customBrandHtml: '',
       customBrandCss: ''
     };
@@ -68,6 +70,8 @@ class R2DriveClient {
       backupIntervalMinutes: Number(this.config.backupIntervalMinutes) || 15,
       backupAutoStart: Boolean(this.config.backupAutoStart),
       closeBehavior: this.config.closeBehavior || 'ask',
+      minimizeBehavior: this.config.minimizeBehavior || 'taskbar',
+      startHiddenToTray: Boolean(this.config.startHiddenToTray),
       customBrandHtml: this.config.customBrandHtml || '',
       customBrandCss: this.config.customBrandCss || '',
       hasSession: Boolean(this.config.sessionCookie)
@@ -95,6 +99,12 @@ class R2DriveClient {
     }
     if (['ask', 'tray', 'quit'].includes(nextConfig.closeBehavior)) {
       this.config.closeBehavior = nextConfig.closeBehavior;
+    }
+    if (['taskbar', 'tray'].includes(nextConfig.minimizeBehavior)) {
+      this.config.minimizeBehavior = nextConfig.minimizeBehavior;
+    }
+    if (typeof nextConfig.startHiddenToTray === 'boolean') {
+      this.config.startHiddenToTray = nextConfig.startHiddenToTray;
     }
     if (typeof nextConfig.customBrandHtml === 'string') {
       this.config.customBrandHtml = nextConfig.customBrandHtml;
@@ -128,11 +138,11 @@ class R2DriveClient {
   }
 
   list(remotePath = '') {
-    return this.requestJson(`/api/list?path=${encodeURIComponent(remotePath)}`);
+    return this.requestJson(`/api/list?path=${encodeURIComponent(toApiPath(remotePath, { allowEmpty: true }))}`);
   }
 
   sharedList(remotePath = '') {
-    return this.requestJson(`/api/shared-list?path=${encodeURIComponent(remotePath)}`, {
+    return this.requestJson(`/api/shared-list?path=${encodeURIComponent(toApiPath(remotePath, { allowEmpty: true }))}`, {
       includeCookie: false
     });
   }
@@ -141,16 +151,37 @@ class R2DriveClient {
     return this.requestJson('/api/storage');
   }
 
+  async testConnection() {
+    const startedAt = Date.now();
+    const storage = await this.storage();
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      storage
+    };
+  }
+
   mkdir(remotePath) {
     return this.requestJson('/api/mkdir', {
       method: 'POST',
-      body: { path: normalizeRemotePath(remotePath) }
+      body: { path: toApiPath(remotePath) }
     });
   }
 
   delete(remotePath) {
-    return this.requestJson(`/api/delete?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`, {
+    return this.requestJson(`/api/delete?path=${encodeURIComponent(toApiPath(remotePath))}`, {
       method: 'DELETE'
+    });
+  }
+
+  deleteBatch(paths) {
+    const normalized = (Array.isArray(paths) ? paths : [paths])
+      .map((item) => toApiPath(item))
+      .filter(Boolean);
+
+    return this.requestJson('/api/delete-batch', {
+      method: 'POST',
+      body: { paths: normalized }
     });
   }
 
@@ -158,8 +189,8 @@ class R2DriveClient {
     return this.requestJson('/api/rename', {
       method: 'POST',
       body: {
-        from: normalizeRemotePath(from),
-        to: normalizeRemotePath(to)
+        from: toApiPath(from),
+        to: toApiPath(to)
       }
     });
   }
@@ -184,6 +215,23 @@ class R2DriveClient {
   testStorageNode(id) {
     return this.requestJson(`/api/storage-nodes/test?id=${encodeURIComponent(id)}`, {
       method: 'POST'
+    });
+  }
+
+  scanOrphans() {
+    return this.requestJson('/api/orphan-cleanup', {
+      method: 'POST',
+      body: { action: 'scan' }
+    });
+  }
+
+  cleanOrphans(keys) {
+    return this.requestJson('/api/orphan-cleanup', {
+      method: 'POST',
+      body: {
+        action: 'clean',
+        keys: Array.isArray(keys) ? keys : [keys]
+      }
     });
   }
 
@@ -222,14 +270,14 @@ class R2DriveClient {
       body: {
         action,
         items: items.map((item) => path.posix.basename(normalizeRemotePath(item))).filter(Boolean),
-        sourcePath: normalizeRemotePath(payload.sourcePath || ''),
-        targetPath: normalizeRemotePath(payload.targetPath || '')
+        sourcePath: toApiPath(payload.sourcePath || '', { allowEmpty: true }),
+        targetPath: toApiPath(payload.targetPath || '', { allowEmpty: true })
       }
     });
   }
 
   async downloadToFile(remotePath, outputPath, onProgress, options = {}) {
-    const url = this.makeUrl(`/api/download?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`);
+    const url = this.makeUrl(`/api/download?path=${encodeURIComponent(toApiPath(remotePath))}`);
     const headers = this.cookieHeaders(url);
 
     try {
@@ -241,7 +289,7 @@ class R2DriveClient {
   }
 
   async previewDataUrl(remotePath, maxBytes = 6 * 1024 * 1024) {
-    let url = this.makeUrl(`/api/download?path=${encodeURIComponent(normalizeRemotePath(remotePath))}`);
+    let url = this.makeUrl(`/api/download?path=${encodeURIComponent(toApiPath(remotePath))}`);
     let headers = this.cookieHeaders(url);
 
     for (let redirect = 0; redirect < 5; redirect += 1) {
@@ -291,7 +339,7 @@ class R2DriveClient {
 
   async uploadFile(localFilePath, remotePath, onProgress) {
     const stat = await fs.promises.stat(localFilePath);
-    const targetPath = normalizeRemotePath(remotePath);
+    const targetPath = toApiPath(remotePath);
     const contentType = getContentType(localFilePath);
     const plan = createUploadPlan(stat.size);
 
@@ -302,7 +350,7 @@ class R2DriveClient {
       strategy: plan.strategy
     });
 
-    if (stat.size <= SIMPLE_UPLOAD_LIMIT) {
+    if (stat.size <= DIRECT_UPLOAD_LIMIT) {
       return this.uploadSimple(localFilePath, targetPath, stat.size, onProgress);
     }
 
@@ -521,12 +569,17 @@ class R2DriveClient {
       Object.assign(headers, this.cookieHeaders(url));
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      redirect: 'follow'
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        redirect: 'follow'
+      });
+    } catch (error) {
+      throw makeNetworkError(error, url);
+    }
 
     this.captureCookie(response.headers);
 
@@ -1094,13 +1147,40 @@ function makeDownloadError(error) {
   }
 
   if (!isRetryableDownloadError(error)) {
-    return error;
+    return makeNetworkError(error);
   }
 
   const message = error?.message && error.message !== 'aborted'
     ? error.message
     : '下载连接中途断开，已自动重试但仍未完成';
   return new Error(message);
+}
+
+function makeNetworkError(error, url) {
+  if (error instanceof HttpError || isAbortError(error)) {
+    return error;
+  }
+
+  const message = String(error?.message || error || '');
+  const code = error?.code || error?.cause?.code || '';
+  const host = url ? `（${new URL(url).host}）` : '';
+  let friendly = message || '网络请求失败';
+
+  if (['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(code) || /timed?out|timeout/i.test(message)) {
+    friendly = `连接服务器超时${host}，请检查 API 地址、网络代理、防火墙或存储节点配置`;
+  } else if (['ENOTFOUND', 'EAI_AGAIN'].includes(code) || /getaddrinfo|ENOTFOUND|EAI_AGAIN/i.test(message)) {
+    friendly = `无法解析服务器地址${host}，请检查 API 地址和 DNS 网络`;
+  } else if (['ECONNREFUSED'].includes(code) || /ECONNREFUSED/i.test(message)) {
+    friendly = `服务器拒绝连接${host}，请确认服务端已启动且端口可访问`;
+  } else if (['ECONNRESET', 'EPIPE', 'ECONNABORTED'].includes(code) || /socket hang up|network|fetch failed/i.test(message)) {
+    friendly = `网络连接中断${host}，请稍后重试或检查存储节点`;
+  }
+
+  const next = new Error(friendly);
+  next.name = 'NetworkError';
+  next.code = code || error?.code;
+  next.cause = error;
+  return next;
 }
 
 function makeAbortError() {
@@ -1153,7 +1233,7 @@ function headersForRedirect(headers, fromUrl, toUrl) {
 function createUploadPlan(size) {
   const strategy = size > DISTRIBUTED_UPLOAD_LIMIT
     ? 'distributed'
-    : size > SIMPLE_UPLOAD_LIMIT
+    : size > DIRECT_UPLOAD_LIMIT
       ? 'multipart'
       : 'simple';
   let chunkSize = CHUNK_SIZE;
@@ -1177,7 +1257,10 @@ function createUploadPlan(size) {
 }
 
 function isDistributedFallbackError(error) {
-  return (error instanceof HttpError && error.status === 409) || isRetryableUploadError(error);
+  if (!(error instanceof HttpError)) {
+    return false;
+  }
+  return error.status === 409 || (error.status === 400 && /distributed|threshold|below/i.test(String(error.body || error.message || '')));
 }
 
 function normalizeBaseUrl(value) {
@@ -1199,6 +1282,30 @@ function normalizeRemotePath(value) {
     .replace(/^\/+/, '')
     .replace(/\/{2,}/g, '/')
     .replace(/\/+$/, '');
+}
+
+function toApiPath(value, options = {}) {
+  const normalized = normalizeRemotePath(value);
+  validateRemotePath(normalized, options);
+  return normalized;
+}
+
+function validateRemotePath(remotePath, options = {}) {
+  if (!remotePath) {
+    if (options.allowEmpty) {
+      return;
+    }
+    throw new Error('缺少远端路径');
+  }
+
+  if (/[\u0000-\u001f]/.test(remotePath)) {
+    throw new Error('远端路径不能包含控制字符');
+  }
+
+  const segments = remotePath.split('/');
+  if (segments.some((segment) => segment === '.' || segment === '..' || segment === '')) {
+    throw new Error('远端路径不能包含 .、.. 或空路径段');
+  }
 }
 
 function parseJsonResponse(text) {

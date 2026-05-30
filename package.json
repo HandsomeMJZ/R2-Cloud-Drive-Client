@@ -28,15 +28,18 @@
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "win": {
+      "icon": "assets/icons/icon.ico",
       "target": [
         "nsis",
         "portable"
       ]
     },
     "mac": {
+      "icon": "assets/icons/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -44,11 +47,17 @@
       "category": "public.app-category.productivity"
     },
     "linux": {
+      "icon": "assets/icons/icon.png",
       "target": [
         "AppImage",
         "deb"
       ],
       "category": "Utility"
+    },
+    "nsis": {
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "R2 Cloud Drive"
     }
   },
   "devDependencies": {

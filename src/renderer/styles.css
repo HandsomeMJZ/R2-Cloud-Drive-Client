@@ -143,6 +143,7 @@ body::-webkit-scrollbar {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -184,6 +185,17 @@ input {
   outline: none;
 }
 
+select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 34px 8px 11px;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+}
+
 textarea {
   width: 100%;
   min-height: 96px;
@@ -199,6 +211,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
@@ -730,6 +743,7 @@ th {
 tbody tr {
   animation: itemIn 220ms ease both;
   transition: background 120ms ease, box-shadow 120ms ease;
+  cursor: pointer;
 }
 
 tbody tr:hover,
@@ -1011,7 +1025,7 @@ tbody tr.is-context-selected .row-actions {
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface);
-    cursor: default;
+    cursor: pointer;
     animation: itemIn 220ms ease both;
     transition:
       background-color 150ms ease,
@@ -3000,6 +3014,7 @@ body.mobile-app .settings-panel {
 body.mobile-app #backupSelectFolderButton,
 body.mobile-app #downloadForm,
 body.mobile-app #brandForm,
+body.mobile-app #desktopBehaviorForm,
 body.mobile-app #openSharedButton,
 body.mobile-app .mobile-desktop-only {
   display: none !important;
@@ -3642,6 +3657,130 @@ body.mobile-app .mobile-action-panel {
   background: color-mix(in srgb, var(--surface) 70%, transparent) !important;
   backdrop-filter: blur(28px) saturate(1.28) !important;
   -webkit-backdrop-filter: blur(28px) saturate(1.28) !important;
+}
+
+/* ── 孤儿文件扫描弹窗 ── */
+
+.orphan-modal {
+  width: min(560px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.orphan-status {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.orphan-status-text {
+  font-size: 14px;
+}
+
+.orphan-list-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.orphan-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.orphan-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.orphan-select-all input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  accent-color: var(--primary);
+}
+
+.orphan-list {
+  flex: 1;
+  min-height: 0;
+  max-height: 280px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 34%, transparent) transparent;
+}
+
+.orphan-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.orphan-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 34%, transparent);
+}
+
+.orphan-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+  border-radius: 6px;
+}
+
+.orphan-item:hover {
+  background: var(--hover);
+}
+
+.orphan-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  flex: 0 0 18px;
+  accent-color: var(--primary);
+}
+
+.orphan-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.orphan-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.orphan-item-meta {
+  font-size: 12px;
+}
+
+.orphan-actions {
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.orphan-actions .hidden {
+  display: none !important;
 }
 
 body.mobile-app[data-view="drive"] .topbar,

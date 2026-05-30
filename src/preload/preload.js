@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('r2Drive', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (config) => ipcRenderer.invoke('config:set', config),
+  testConnection: () => ipcRenderer.invoke('config:test-connection'),
   selectDownloadDir: () => ipcRenderer.invoke('config:select-download-dir'),
   login: (password) => ipcRenderer.invoke('auth:login', password),
   logout: () => ipcRenderer.invoke('auth:logout'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('r2Drive', {
   storage: () => ipcRenderer.invoke('drive:storage'),
   mkdir: (remotePath) => ipcRenderer.invoke('drive:mkdir', remotePath),
   deletePath: (remotePath) => ipcRenderer.invoke('drive:delete', remotePath),
+  deleteBatch: (paths) => ipcRenderer.invoke('drive:delete-batch', paths),
   rename: (from, to) => ipcRenderer.invoke('drive:rename', { from, to }),
   selectUploadFiles: () => ipcRenderer.invoke('drive:select-upload'),
   uploadFiles: (filePaths, remotePath) => ipcRenderer.invoke('drive:upload', { filePaths, remotePath }),
@@ -33,6 +35,8 @@ contextBridge.exposeInMainWorld('r2Drive', {
   nodesSave: (node) => ipcRenderer.invoke('drive:nodes-save', node),
   nodesDelete: (id) => ipcRenderer.invoke('drive:nodes-delete', id),
   nodesTest: (id) => ipcRenderer.invoke('drive:nodes-test', id),
+  scanOrphans: () => ipcRenderer.invoke('drive:orphans-scan'),
+  cleanOrphans: (keys) => ipcRenderer.invoke('drive:orphans-clean', keys),
 
   clipboardGet: (id) => ipcRenderer.invoke('clipboard:get', id),
   clipboardSet: (items, action, sourcePath, id) => ipcRenderer.invoke('clipboard:set', { items, action, sourcePath, id }),
@@ -42,6 +46,7 @@ contextBridge.exposeInMainWorld('r2Drive', {
   openPath: (filePath) => ipcRenderer.invoke('shell:open-path', filePath),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  hideToTray: () => ipcRenderer.invoke('window:hide-to-tray'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
 
