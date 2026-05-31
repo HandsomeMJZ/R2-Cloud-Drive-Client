@@ -6,6 +6,8 @@ R2 Cloud Drive Client 是一款基于 Electron 的桌面云盘客户端软件，
 
 软件适用于需要通过桌面客户端管理 Cloudflare R2 或兼容对象存储中云盘文件的用户。客户端通过服务端 API 与云端存储通信，本地不直接暴露对象存储密钥。
 
+![截图](https://cloud.junzhen.qzz.io/api/download?path=shared%2FScreenShot_2026-05-31_225923_542.png)
+
 ## 2. 主要功能
 
 - 用户登录：支持配置 API 基准地址和访问密码。
