@@ -33,7 +33,7 @@ async function init() {
   els.saveButton.addEventListener('click', saveAndLogin);
   els.mediaInput.addEventListener('change', selectFiles);
   els.syncButton.addEventListener('click', backupSelectedFiles);
-  setStatus(state.cookie ? '已保存登录状态，可以选择媒体文件备份。' : '请先保存并登录。');
+  setStatus(state.cookie ? '已保存登录状态，可以选择媒体文件同步。' : '请先保存并登录。');
 }
 
 async function saveAndLogin() {
@@ -90,13 +90,13 @@ async function backupSelectedFiles() {
       await uploadFile(file, joinRemote(target, file.name));
       uploaded += 1;
       updateProgress(index + 1, state.files.length);
-      log(`已备份：${file.name}`);
+      log(`已同步：${file.name}`);
     }
 
     setStatus(`完成：上传 ${uploaded} 个，跳过 ${skipped} 个。`);
   } catch (error) {
     log(error.message, true);
-    setStatus('备份失败');
+    setStatus('同步失败');
   }
 }
 

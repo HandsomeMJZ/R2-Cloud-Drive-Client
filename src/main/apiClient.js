@@ -5,12 +5,14 @@ const path = require('node:path');
 const { pipeline } = require('node:stream');
 
 const DEFAULT_BASE_URL = '';
+const DEFAULT_BACKUP_SYNC_CLIENT_ID = 'r2drive-default';
 const DIRECT_UPLOAD_LIMIT = 512 * 1024;
 const DISTRIBUTED_UPLOAD_LIMIT = DIRECT_UPLOAD_LIMIT;
 const CHUNK_SIZE = 32 * 1024 * 1024;
 const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
 const MAX_MULTIPART_PARTS = 10000;
 const DOWNLOAD_MAX_RETRIES = 6;
+const DOWNLOAD_CONCURRENT_CHUNKS = 4;
 const UPLOAD_MAX_RETRIES = 3;
 
 class HttpError extends Error {
@@ -32,9 +34,18 @@ class R2DriveClient {
       backupJobs: [],
       backupIntervalMinutes: 15,
       backupAutoStart: false,
+      backupSyncClientId: DEFAULT_BACKUP_SYNC_CLIENT_ID,
+      backupSyncPromptDismissed: false,
       closeBehavior: 'ask',
       minimizeBehavior: 'taskbar',
       startHiddenToTray: false,
+      autoLaunch: false,
+      uploadBatchNotify: true,
+      downloadBatchNotify: true,
+      autoSyncEnabled: false,
+      updateAutoCheck: true,
+      updateSkippedVersion: '',
+      updatePromptedVersions: [],
       customBrandHtml: '',
       customBrandCss: ''
     };
@@ -69,9 +80,18 @@ class R2DriveClient {
       backupJobs: Array.isArray(this.config.backupJobs) ? this.config.backupJobs : [],
       backupIntervalMinutes: Number(this.config.backupIntervalMinutes) || 15,
       backupAutoStart: Boolean(this.config.backupAutoStart),
+      backupSyncClientId: this.config.backupSyncClientId || DEFAULT_BACKUP_SYNC_CLIENT_ID,
+      backupSyncPromptDismissed: Boolean(this.config.backupSyncPromptDismissed),
       closeBehavior: this.config.closeBehavior || 'ask',
       minimizeBehavior: this.config.minimizeBehavior || 'taskbar',
       startHiddenToTray: Boolean(this.config.startHiddenToTray),
+      autoLaunch: Boolean(this.config.autoLaunch),
+      uploadBatchNotify: this.config.uploadBatchNotify !== false,
+      downloadBatchNotify: this.config.downloadBatchNotify !== false,
+      autoSyncEnabled: Boolean(this.config.autoSyncEnabled),
+      updateAutoCheck: this.config.updateAutoCheck !== false,
+      updateSkippedVersion: this.config.updateSkippedVersion || '',
+      updatePromptedVersions: Array.isArray(this.config.updatePromptedVersions) ? this.config.updatePromptedVersions : [],
       customBrandHtml: this.config.customBrandHtml || '',
       customBrandCss: this.config.customBrandCss || '',
       hasSession: Boolean(this.config.sessionCookie)
@@ -97,6 +117,15 @@ class R2DriveClient {
     if (typeof nextConfig.backupAutoStart === 'boolean') {
       this.config.backupAutoStart = nextConfig.backupAutoStart;
     }
+    if (typeof nextConfig.backupSyncClientId === 'string') {
+      const clientId = nextConfig.backupSyncClientId.trim();
+      if (clientId) {
+        this.config.backupSyncClientId = clientId;
+      }
+    }
+    if (typeof nextConfig.backupSyncPromptDismissed === 'boolean') {
+      this.config.backupSyncPromptDismissed = nextConfig.backupSyncPromptDismissed;
+    }
     if (['ask', 'tray', 'quit'].includes(nextConfig.closeBehavior)) {
       this.config.closeBehavior = nextConfig.closeBehavior;
     }
@@ -105,6 +134,30 @@ class R2DriveClient {
     }
     if (typeof nextConfig.startHiddenToTray === 'boolean') {
       this.config.startHiddenToTray = nextConfig.startHiddenToTray;
+    }
+    if (typeof nextConfig.autoLaunch === 'boolean') {
+      this.config.autoLaunch = nextConfig.autoLaunch;
+    }
+    if (typeof nextConfig.uploadBatchNotify === 'boolean') {
+      this.config.uploadBatchNotify = nextConfig.uploadBatchNotify;
+    }
+    if (typeof nextConfig.downloadBatchNotify === 'boolean') {
+      this.config.downloadBatchNotify = nextConfig.downloadBatchNotify;
+    }
+    if (typeof nextConfig.autoSyncEnabled === 'boolean') {
+      this.config.autoSyncEnabled = nextConfig.autoSyncEnabled;
+    }
+    if (typeof nextConfig.updateAutoCheck === 'boolean') {
+      this.config.updateAutoCheck = nextConfig.updateAutoCheck;
+    }
+    if (typeof nextConfig.updateSkippedVersion === 'string') {
+      this.config.updateSkippedVersion = sanitizeVersion(nextConfig.updateSkippedVersion);
+    }
+    if (Array.isArray(nextConfig.updatePromptedVersions)) {
+      this.config.updatePromptedVersions = nextConfig.updatePromptedVersions
+        .map((version) => sanitizeVersion(version))
+        .filter(Boolean)
+        .slice(-30);
     }
     if (typeof nextConfig.customBrandHtml === 'string') {
       this.config.customBrandHtml = nextConfig.customBrandHtml;
@@ -149,6 +202,40 @@ class R2DriveClient {
 
   storage() {
     return this.requestJson('/api/storage');
+  }
+
+  backupDirs(clientId = this.config.backupSyncClientId) {
+    return this.requestJson(`/api/backup-dirs?clientId=${encodeURIComponent(normalizeClientId(clientId))}`);
+  }
+
+  saveBackupDirs(dirs, clientId = this.config.backupSyncClientId) {
+    return this.requestJson('/api/backup-dirs', {
+      method: 'POST',
+      body: {
+        clientId: normalizeClientId(clientId),
+        dirs: normalizeRemoteDirList(dirs)
+      }
+    });
+  }
+
+  addBackupDir(remotePath, clientId = this.config.backupSyncClientId) {
+    return this.requestJson('/api/backup-dirs/add', {
+      method: 'POST',
+      body: {
+        clientId: normalizeClientId(clientId),
+        path: toApiPath(remotePath)
+      }
+    });
+  }
+
+  deleteBackupDir(remotePath, clientId = this.config.backupSyncClientId) {
+    const query = new URLSearchParams({ clientId: normalizeClientId(clientId) });
+    if (remotePath) {
+      query.set('path', toApiPath(remotePath));
+    }
+    return this.requestJson(`/api/backup-dirs?${query.toString()}`, {
+      method: 'DELETE'
+    });
   }
 
   async testConnection() {
@@ -817,36 +904,82 @@ async function downloadWithRangeRetry(url, headers, outputPath, onProgress, opti
     return downloadWholeFile(url, headers, outputPath, onProgress, options);
   }
 
-  let downloaded = 0;
-  let retries = 0;
+  // 小文件或仅一个分片时，直接用单连接下载更高效
+  if (info.total <= CHUNK_SIZE) {
+    return downloadWholeFile(url, headers, outputPath, onProgress, options);
+  }
 
-  while (downloaded < info.total) {
-    throwIfAborted(options.signal);
-    const start = downloaded;
-    const end = Math.min(info.total - 1, start + CHUNK_SIZE - 1);
+  // 预分配文件到完整大小
+  const fd = await fs.promises.open(outputPath, 'w');
+  await fd.truncate(info.total);
+  await fd.close();
 
-    try {
-      const result = await downloadRange(url, headers, outputPath, start, end, info.total, onProgress, options);
-      downloaded += result.bytes;
-      retries = 0;
+  // 构建分片计划
+  const chunks = [];
+  let offset = 0;
+  while (offset < info.total) {
+    const end = Math.min(info.total - 1, offset + CHUNK_SIZE - 1);
+    chunks.push({ start: offset, end, index: chunks.length });
+    offset = end + 1;
+  }
 
-      if (result.bytes !== end - start + 1) {
-        throw new Error(`分段下载不完整：已接收 ${result.bytes} 字节，预期 ${end - start + 1} 字节`);
+  const downloadedBytes = { value: 0 };
+  const maxConcurrent = Math.min(DOWNLOAD_CONCURRENT_CHUNKS, chunks.length);
+
+  // 带重试的单个分片下载
+  async function downloadOneChunk(chunk) {
+    let retries = 0;
+    while (true) {
+      throwIfAborted(options.signal);
+      try {
+        const bytes = await downloadRangeChunk(
+          url, headers, outputPath,
+          chunk.start, chunk.end, info.total,
+          options
+        );
+        downloadedBytes.value += bytes;
+        onProgress?.({
+          transferred: downloadedBytes.value,
+          total: info.total,
+          phase: '下载中'
+        });
+
+        if (bytes !== chunk.end - chunk.start + 1) {
+          throw new Error(`分段下载不完整：已接收 ${bytes} 字节，预期 ${chunk.end - chunk.start + 1} 字节`);
+        }
+        return;
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+        if (!isRetryableDownloadError(error) || retries >= DOWNLOAD_MAX_RETRIES) {
+          throw error;
+        }
+        retries += 1;
+        await delay(Math.min(8000, 500 * (2 ** (retries - 1))), options.signal);
       }
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw error;
-      }
-      const existingSize = await fileSize(outputPath);
-      downloaded = Math.min(existingSize, info.total);
-
-      if (!isRetryableDownloadError(error) || retries >= DOWNLOAD_MAX_RETRIES) {
-        throw error;
-      }
-
-      retries += 1;
-      await delay(Math.min(8000, 500 * (2 ** (retries - 1))), options.signal);
     }
+  }
+
+  // 并发下载分片（带并发数限制）
+  const running = new Set();
+  try {
+    for (const chunk of chunks) {
+      throwIfAborted(options.signal);
+      const task = downloadOneChunk(chunk).finally(() => running.delete(task));
+      running.add(task);
+
+      // 达到并发上限时，等待至少一个完成
+      if (running.size >= maxConcurrent) {
+        await Promise.race(running);
+      }
+    }
+    // 等待所有剩余分片完成
+    await Promise.all([...running]);
+  } catch (error) {
+    // 发生错误时等待已启动的分片结束再抛出
+    await Promise.allSettled([...running]);
+    throw error;
   }
 
   const finalSize = await fileSize(outputPath);
@@ -985,6 +1118,81 @@ function downloadRange(url, headers, outputPath, start, end, total, onProgress, 
           headers: res.headers,
           bytes: received
         });
+      });
+    });
+
+    const cleanup = () => {
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      req.destroy(makeAbortError());
+    };
+
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+    req.end();
+  });
+}
+
+// 在预分配文件中写入指定偏移的分片（用于并发下载）
+function downloadRangeChunk(url, headers, outputPath, start, end, total, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(makeAbortError());
+      return;
+    }
+
+    const target = url instanceof URL ? url : new URL(url);
+    const transport = target.protocol === 'http:' ? http : https;
+    let received = 0;
+    let settled = false;
+
+    const req = transport.request(target, {
+      method: 'GET',
+      headers: {
+        ...headers,
+        Range: `bytes=${start}-${end}`
+      }
+    }, (res) => {
+      if (res.statusCode !== 206) {
+        readErrorBody(res, (body) => {
+          reject(new HttpError(readableHttpError(res.statusCode, body), res.statusCode, body));
+        });
+        return;
+      }
+
+      const expectedTotal = parseContentRangeTotal(res.headers['content-range']);
+      if (expectedTotal && total && expectedTotal !== total) {
+        res.resume();
+        reject(new Error(`文件大小变化：当前 ${expectedTotal} 字节，预期 ${total} 字节`));
+        return;
+      }
+
+      // 在预分配文件的正确偏移位置写入
+      const file = fs.createWriteStream(outputPath, { flags: 'r+', start });
+
+      res.on('data', (chunk) => {
+        received += chunk.length;
+      });
+
+      pipeline(res, file, (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(received);
       });
     });
 
@@ -1290,6 +1498,34 @@ function toApiPath(value, options = {}) {
   return normalized;
 }
 
+function normalizeClientId(value) {
+  const clientId = String(value || DEFAULT_BACKUP_SYNC_CLIENT_ID).trim();
+  return clientId || DEFAULT_BACKUP_SYNC_CLIENT_ID;
+}
+
+function sanitizeVersion(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^0-9A-Za-z.+-]/g, '');
+}
+
+function normalizeRemoteDirList(dirs) {
+  const seen = new Set();
+  const normalized = [];
+
+  for (const dir of Array.isArray(dirs) ? dirs : []) {
+    const remotePath = toApiPath(dir);
+    if (seen.has(remotePath)) {
+      continue;
+    }
+    seen.add(remotePath);
+    normalized.push(remotePath);
+  }
+
+  return normalized;
+}
+
 function validateRemotePath(remotePath, options = {}) {
   if (!remotePath) {
     if (options.allowEmpty) {
@@ -1350,6 +1586,9 @@ function getContentType(filePath) {
   const map = {
     '.aac': 'audio/aac',
     '.avi': 'video/x-msvideo',
+    '.bmp': 'image/bmp',
+    '.cfg': 'text/plain',
+    '.conf': 'text/plain',
     '.css': 'text/css',
     '.csv': 'text/csv',
     '.doc': 'application/msword',
@@ -1361,15 +1600,22 @@ function getContentType(filePath) {
     '.jpg': 'image/jpeg',
     '.js': 'text/javascript',
     '.json': 'application/json',
+    '.log': 'text/plain',
+    '.m4a': 'audio/mp4',
     '.md': 'text/markdown',
+    '.mkv': 'video/x-matroska',
+    '.mov': 'video/quicktime',
     '.mp3': 'audio/mpeg',
     '.mp4': 'video/mp4',
+    '.ogg': 'audio/ogg',
+    '.opus': 'audio/ogg',
     '.pdf': 'application/pdf',
     '.png': 'image/png',
     '.ppt': 'application/vnd.ms-powerpoint',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     '.svg': 'image/svg+xml',
     '.txt': 'text/plain',
+    '.wav': 'audio/wav',
     '.webm': 'video/webm',
     '.webp': 'image/webp',
     '.xls': 'application/vnd.ms-excel',

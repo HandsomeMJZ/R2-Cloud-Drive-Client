@@ -6,6 +6,7 @@ const FULL_PREVIEW_LIMIT = 32 * 1024 * 1024;
 const MAX_DOWNLOAD_HISTORY = 100;
 const MATERIAL_ICON_BY_KEY = {
   'open-icon': 'open_in_new',
+  'preview-icon': 'visibility',
   'download-icon': 'download',
   'rename-icon': 'drive_file_rename_outline',
   'trash-icon': 'delete_outline',
@@ -16,23 +17,9 @@ const MATERIAL_ICON_BY_KEY = {
   'folder-plus-icon': 'create_new_folder',
   'refresh-icon': 'refresh'
 };
-const MATERIAL_ICON_BY_KIND = {
-  folder: 'folder',
-  image: 'image',
-  video: 'movie',
-  audio: 'audio_file',
-  archive: 'folder_zip',
-  pdf: 'picture_as_pdf',
-  document: 'description',
-  sheet: 'table_chart',
-  presentation: 'slideshow',
-  code: 'code',
-  executable: 'terminal',
-  database: 'database',
-  generic: 'insert_drive_file'
-};
 const MATERIAL_ICON_BY_ACTION = {
   打开: 'open_in_new',
+  预览: 'visibility',
   下载: 'download',
   重命名: 'drive_file_rename_outline',
   复制: 'content_copy',
@@ -65,6 +52,15 @@ const state = {
     autoStart: false,
     statuses: new Map()
   },
+  syncBootstrap: {
+    remoteDirs: []
+  },
+  backupSyncDiff: {
+    localOnly: [],
+    remoteOnly: [],
+    synced: [],
+    checked: false
+  },
   transfers: new Map(),
   downloadHistory: [],
   previewCache: new Map(),
@@ -75,6 +71,12 @@ const state = {
   busyCount: 0,
   clipboard: null, // { items: [...], action: 'copy'|'cut', sourcePath: '' }
   selectedItems: new Map(), // name -> { name, type }
+  pendingSyncUpdates: [],
+  update: {
+    appInfo: null,
+    pending: null,
+    checking: false
+  },
   viewer: {
     items: [],
     index: 0,
@@ -168,6 +170,14 @@ function cacheElements() {
     closeBehaviorSelect: document.querySelector('#closeBehaviorSelect'),
     minimizeBehaviorSelect: document.querySelector('#minimizeBehaviorSelect'),
     startHiddenToTrayInput: document.querySelector('#startHiddenToTrayInput'),
+    autoLaunchInput: document.querySelector('#autoLaunchInput'),
+    uploadBatchNotifyInput: document.querySelector('#uploadBatchNotifyInput'),
+    downloadBatchNotifyInput: document.querySelector('#downloadBatchNotifyInput'),
+    updateForm: document.querySelector('#updateForm'),
+    updateAutoCheckInput: document.querySelector('#updateAutoCheckInput'),
+    updateCheckButton: document.querySelector('#updateCheckButton'),
+    updateVersionText: document.querySelector('#updateVersionText'),
+    updateStatus: document.querySelector('#updateStatus'),
     downloadForm: document.querySelector('#downloadForm'),
     downloadDirInput: document.querySelector('#downloadDirInput'),
     selectDownloadDirButton: document.querySelector('#selectDownloadDirButton'),
@@ -206,6 +216,7 @@ function cacheElements() {
     contextMenu: document.querySelector('#contextMenu'),
     toast: document.querySelector('#toast'),
     transferBubble: document.querySelector('#transferBubble'),
+    transferBubbleLabel: document.querySelector('#transferBubbleLabel'),
     transferBubbleCount: document.querySelector('#transferBubbleCount'),
     transferBubbleProgress: document.querySelector('#transferBubbleProgress'),
     uploadTransferList: document.querySelector('#uploadTransferList'),
@@ -236,12 +247,72 @@ function cacheElements() {
     orphanList: document.querySelector('#orphanList'),
     orphanScanButton: document.querySelector('#orphanScanButton'),
     orphanCleanButton: document.querySelector('#orphanCleanButton'),
-    orphanCloseButton: document.querySelector('#orphanCloseButton')
+    orphanCloseButton: document.querySelector('#orphanCloseButton'),
+    syncBootstrapModal: document.querySelector('#syncBootstrapModal'),
+    syncSelectAll: document.querySelector('#syncSelectAll'),
+    syncRemoteCount: document.querySelector('#syncRemoteCount'),
+    syncRemoteList: document.querySelector('#syncRemoteList'),
+    syncBootstrapSkipButton: document.querySelector('#syncBootstrapSkipButton'),
+    syncBootstrapConfirmButton: document.querySelector('#syncBootstrapConfirmButton'),
+    backupCheckSyncButton: document.querySelector('#backupCheckSyncButton'),
+    backupSyncStatus: document.querySelector('#backupSyncStatus'),
+    backupSyncInSync: document.querySelector('#backupSyncInSync'),
+    backupSyncDiff: document.querySelector('#backupSyncDiff'),
+    backupSyncLocalOnly: document.querySelector('#backupSyncLocalOnly'),
+    backupSyncLocalOnlyList: document.querySelector('#backupSyncLocalOnlyList'),
+    backupSyncPushLocalButton: document.querySelector('#backupSyncPushLocalButton'),
+    backupSyncRemoteOnly: document.querySelector('#backupSyncRemoteOnly'),
+    backupSyncRemoteOnlyList: document.querySelector('#backupSyncRemoteOnlyList'),
+    backupSyncPullRemoteButton: document.querySelector('#backupSyncPullRemoteButton'),
+
+    // 重置
+    resetAppButton: document.querySelector('#resetAppButton'),
+
+    // 引导配置向导
+    setupWizard: document.querySelector('#setupWizard'),
+    setupStep1: document.querySelector('#setupStep1'),
+    setupStep2: document.querySelector('#setupStep2'),
+    setupStep3: document.querySelector('#setupStep3'),
+    setupStep1Form: document.querySelector('#setupStep1Form'),
+    setupStep2Form: document.querySelector('#setupStep2Form'),
+    setupBaseUrl: document.querySelector('#setupBaseUrl'),
+    setupPassword: document.querySelector('#setupPassword'),
+    setupLoginStatus: document.querySelector('#setupLoginStatus'),
+    setupSkipButton: document.querySelector('#setupSkipButton'),
+    setupStep2Back: document.querySelector('#setupStep2Back'),
+    setupStep3SelectDownload: document.querySelector('#setupStep3SelectDownload'),
+    setupFinishButton: document.querySelector('#setupFinishButton'),
+    setupSummaryUrl: document.querySelector('#setupSummaryUrl'),
+    setupSummaryDownload: document.querySelector('#setupSummaryDownload'),
+
+    // 多端同步更新通知
+    syncUpdateModal: document.querySelector('#syncUpdateModal'),
+    syncUpdateDesc: document.querySelector('#syncUpdateDesc'),
+    syncUpdateFileList: document.querySelector('#syncUpdateFileList'),
+    syncUpdateSkipOnce: document.querySelector('#syncUpdateSkipOnce'),
+    syncUpdateAlwaysSync: document.querySelector('#syncUpdateAlwaysSync'),
+    updateModal: document.querySelector('#updateModal'),
+    updateModalTitle: document.querySelector('#updateModalTitle'),
+    updateModalDesc: document.querySelector('#updateModalDesc'),
+    updateReleaseNotes: document.querySelector('#updateReleaseNotes'),
+    updateOpenButton: document.querySelector('#updateOpenButton'),
+    updateSkipButton: document.querySelector('#updateSkipButton'),
+    updateDisableAutoCheckButton: document.querySelector('#updateDisableAutoCheckButton'),
+    updateLaterButton: document.querySelector('#updateLaterButton')
   });
 }
 
 function bindEvents() {
   setupAboutPanel();
+
+  // 禁止长按/拖拽选择文字
+  document.addEventListener('selectstart', (event) => {
+    const tag = (event.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || event.target.isContentEditable) {
+      return;
+    }
+    event.preventDefault();
+  });
 
   els.windowMinimizeButton.addEventListener('click', () => api.minimizeWindow());
   els.windowMaximizeButton.addEventListener('click', toggleWindowMaximize);
@@ -288,6 +359,12 @@ function bindEvents() {
   els.backupSaveSettingsButton.addEventListener('click', saveBackupSettings);
   els.backupSelectFolderButton.addEventListener('click', selectBackupFolder);
   els.backupRunAllButton.addEventListener('click', () => runBackupNow(''));
+  els.syncBootstrapSkipButton?.addEventListener('click', dismissSyncBootstrap);
+  els.syncBootstrapConfirmButton?.addEventListener('click', confirmSyncBootstrap);
+  els.syncSelectAll?.addEventListener('change', toggleSyncBootstrapSelection);
+  els.backupCheckSyncButton?.addEventListener('click', checkBackupSyncStatus);
+  els.backupSyncPushLocalButton?.addEventListener('click', pushLocalDirsToRemote);
+  els.backupSyncPullRemoteButton?.addEventListener('click', pullRemoteDirsToLocal);
   els.driveView.addEventListener('contextmenu', showViewContextMenu);
   els.albumView.addEventListener('contextmenu', showViewContextMenu);
 
@@ -387,6 +464,17 @@ function bindEvents() {
     event.preventDefault();
     await saveDesktopBehavior();
   });
+  els.updateAutoCheckInput?.addEventListener('change', saveUpdateAutoCheck);
+  els.updateCheckButton?.addEventListener('click', checkForUpdatesManually);
+  els.updateOpenButton?.addEventListener('click', openUpdateDownloadPage);
+  els.updateSkipButton?.addEventListener('click', skipCurrentUpdateVersion);
+  els.updateDisableAutoCheckButton?.addEventListener('click', disableAutoUpdateCheck);
+  els.updateLaterButton?.addEventListener('click', closeUpdateModal);
+  els.updateModal?.addEventListener('click', (event) => {
+    if (event.target === els.updateModal) {
+      closeUpdateModal();
+    }
+  });
 
   els.downloadForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -448,6 +536,41 @@ function bindEvents() {
     state.backup.statuses.set(payload.jobId, payload);
     renderBackup();
   });
+
+  // ── 重置应用 ──
+  els.resetAppButton?.addEventListener('click', resetAppData);
+
+  // ── 引导配置向导 ──
+  els.setupStep1Form?.addEventListener('submit', setupStep1Submit);
+  els.setupStep2Form?.addEventListener('submit', setupStep2Submit);
+  els.setupSkipButton?.addEventListener('click', skipSetupWizard);
+  els.setupStep2Back?.addEventListener('click', setupGoToStep1);
+  els.setupStep3SelectDownload?.addEventListener('click', setupSelectDownloadDir);
+  els.setupFinishButton?.addEventListener('click', finishSetupWizard);
+
+  // ── 多端同步更新通知 ──
+  els.syncUpdateSkipOnce?.addEventListener('click', dismissSyncUpdate);
+  els.syncUpdateAlwaysSync?.addEventListener('click', enableAutoSyncAndApply);
+  els.syncUpdateModal?.addEventListener('click', (event) => {
+    if (event.target === els.syncUpdateModal) {
+      dismissSyncUpdate();
+    }
+  });
+
+  // 监听来自主进程的同步更新事件
+  if (api.onSyncUpdate) {
+    api.onSyncUpdate((payload) => {
+      showSyncUpdateNotification(payload);
+    });
+  }
+
+  if (api.onUpdate) {
+    api.onUpdate((payload) => {
+      if (payload?.type === 'update-available' && payload.update) {
+        showUpdateModal(payload.update);
+      }
+    });
+  }
 }
 
 async function init() {
@@ -457,16 +580,20 @@ async function init() {
   updateFileViewModeControls();
   renderTransfers();
   updateActionBar();
+  state.update.appInfo = await api.getAppInfo?.().catch(() => null);
   state.config = await api.getConfig();
   await loadBackupConfig();
   renderConfig();
+  showPendingUpdateIfAvailable();
 
+  // 首次使用：显示引导配置向导
   if (!state.config.baseUrl) {
-    showAuth();
+    showSetupWizard();
     return;
   }
 
   await Promise.allSettled([loadStorage(), loadFiles(''), loadQuick(), refreshClipboardState()]);
+  await maybeShowSyncBootstrap();
 }
 
 function applySavedTheme() {
@@ -491,8 +618,40 @@ function renderConfig() {
   if (els.startHiddenToTrayInput) {
     els.startHiddenToTrayInput.checked = Boolean(state.config?.startHiddenToTray);
   }
+  if (els.autoLaunchInput) {
+    els.autoLaunchInput.checked = Boolean(state.config?.autoLaunch);
+  }
+  if (els.uploadBatchNotifyInput) {
+    els.uploadBatchNotifyInput.checked = state.config?.uploadBatchNotify !== false;
+  }
+  if (els.downloadBatchNotifyInput) {
+    els.downloadBatchNotifyInput.checked = state.config?.downloadBatchNotify !== false;
+  }
+  renderUpdateSettings();
   els.serverStatus.textContent = displayBaseUrlHost(baseUrl) || '未连接';
   applyBrandCustomization();
+}
+
+function renderUpdateSettings(message) {
+  if (els.updateAutoCheckInput) {
+    els.updateAutoCheckInput.checked = state.config?.updateAutoCheck !== false;
+  }
+  const currentVersion = state.update.appInfo?.version || '';
+  if (els.updateVersionText) {
+    els.updateVersionText.textContent = `v${currentVersion || '未知'}`;
+  }
+  if (!els.updateStatus) {
+    return;
+  }
+
+  if (message) {
+    els.updateStatus.textContent = message;
+    return;
+  }
+
+  const skipped = state.config?.updateSkippedVersion ? `，已跳过 v${state.config.updateSkippedVersion}` : '';
+  const autoText = state.config?.updateAutoCheck === false ? '自动检查已关闭' : '自动检查已开启';
+  els.updateStatus.textContent = `当前版本 v${currentVersion || '未知'}，${autoText}${skipped}`;
 }
 
 async function saveBaseUrl(baseUrl) {
@@ -523,13 +682,128 @@ async function saveBrandCustomization() {
 }
 
 async function saveDesktopBehavior() {
+  const autoLaunch = els.autoLaunchInput?.checked ?? false;
+  const uploadBatchNotify = els.uploadBatchNotifyInput?.checked ?? true;
+  const downloadBatchNotify = els.downloadBatchNotifyInput?.checked ?? true;
+
+  // 开机自启动单独调用
+  if (els.autoLaunchInput) {
+    await api.setAutoLaunch(autoLaunch).catch(() => {});
+  }
+
   state.config = await api.setConfig({
     closeBehavior: els.closeBehaviorSelect.value,
     minimizeBehavior: els.minimizeBehaviorSelect.value,
-    startHiddenToTray: els.startHiddenToTrayInput.checked
+    startHiddenToTray: els.startHiddenToTrayInput.checked,
+    autoLaunch,
+    uploadBatchNotify,
+    downloadBatchNotify
   });
   renderConfig();
   toast('桌面行为已保存');
+}
+
+async function saveUpdateAutoCheck() {
+  state.config = await api.setConfig({
+    updateAutoCheck: Boolean(els.updateAutoCheckInput?.checked)
+  });
+  renderConfig();
+  toast(state.config.updateAutoCheck === false ? '已关闭自动检查更新' : '已开启自动检查更新');
+}
+
+async function checkForUpdatesManually() {
+  if (state.update.checking) {
+    return;
+  }
+
+  state.update.checking = true;
+  if (els.updateCheckButton) {
+    els.updateCheckButton.disabled = true;
+  }
+  renderUpdateSettings('正在检查 GitHub 更新...');
+
+  try {
+    const result = await api.checkForUpdates({ manual: true, notify: false });
+    if (!result?.ok) {
+      renderUpdateSettings(`检查更新失败：${result?.error || '未知错误'}`);
+      toast('检查更新失败');
+      return;
+    }
+    if (result.hasUpdate && result.update) {
+      state.update.pending = result.update;
+      renderUpdateSettings(`发现新版本 v${result.update.version}`);
+      showUpdateModal(result.update, { skipped: result.skipped });
+      return;
+    }
+    renderUpdateSettings(`当前已是最新版本 v${result.currentVersion || state.update.appInfo?.version || ''}`);
+    toast('当前已是最新版本');
+  } catch (error) {
+    renderUpdateSettings(`检查更新失败：${error.message}`);
+    toast('检查更新失败');
+  } finally {
+    state.update.checking = false;
+    if (els.updateCheckButton) {
+      els.updateCheckButton.disabled = false;
+    }
+  }
+}
+
+async function showPendingUpdateIfAvailable() {
+  const result = await api.getPendingUpdate?.().catch(() => null);
+  if (result?.update) {
+    state.update.pending = result.update;
+    showUpdateModal(result.update);
+  }
+}
+
+function showUpdateModal(update, options = {}) {
+  if (!els.updateModal || !update) {
+    return;
+  }
+
+  state.update.pending = update;
+  const currentVersion = update.currentVersion || state.update.appInfo?.version || '';
+  els.updateModalTitle.textContent = `发现新版本 v${update.version}`;
+  els.updateModalDesc.textContent = [
+    currentVersion ? `当前版本 v${currentVersion}` : '',
+    update.publishedAt ? `发布时间 ${formatDate(update.publishedAt)}` : '',
+    options.skipped ? '这个版本已被标记为跳过，仍可手动打开更新页面。' : ''
+  ].filter(Boolean).join('，');
+  els.updateReleaseNotes.textContent = (update.body || '暂无更新说明').trim().slice(0, 4000);
+  els.updateOpenButton.disabled = !update.downloadUrl && !update.htmlUrl;
+  els.updateModal.classList.remove('hidden');
+}
+
+function closeUpdateModal() {
+  els.updateModal?.classList.add('hidden');
+}
+
+async function openUpdateDownloadPage() {
+  const update = state.update.pending;
+  const url = update?.downloadUrl || update?.htmlUrl;
+  if (!url) {
+    return;
+  }
+  await api.openExternal(url);
+}
+
+async function skipCurrentUpdateVersion() {
+  const version = state.update.pending?.version;
+  if (!version) {
+    closeUpdateModal();
+    return;
+  }
+  state.config = await api.skipUpdateVersion(version);
+  renderConfig();
+  closeUpdateModal();
+  toast(`已跳过 v${version}`);
+}
+
+async function disableAutoUpdateCheck() {
+  state.config = await api.setConfig({ updateAutoCheck: false });
+  renderConfig();
+  closeUpdateModal();
+  toast('已关闭自动检查更新');
 }
 
 function applyBrandCustomization() {
@@ -558,6 +832,14 @@ function setupAboutPanel() {
     '<strong class="about-name">俊臻是真俊</strong>',
     '<span class="about-signature">Hello帅1,点个star支持一下呗⬇️</span>',
     '<a class="about-github" href="https://github.com/HandsomeMJZ" target="_blank" rel="noreferrer">GitHub: HandsomeMJZ</a>',
+    '</div>',
+    '</div>',
+    '<div class="about-profile">',
+    '<div class="about-avatar" aria-hidden="true"><img src="https://q.qlogo.cn/headimg_dl?dst_uin=3291074897&spec=640&img_type=jpg" alt="头像" style="width:100%; height:100%; object-fit:cover;"></div>',
+    '<div class="about-copy">',
+    '<strong class="about-name">沐春时</strong>',
+    '<span class="about-signature">“这一次我想改写航线！”</span>',
+    '<span class="about-signature">   </span>',
     '</div>',
     '</div>'
   ].join('');
@@ -600,6 +882,8 @@ async function login(password) {
     els.passwordInput.value = '';
     els.authPassword.value = '';
     await Promise.allSettled([loadStorage(), loadFiles(state.currentPath), loadQuick()]);
+    await loadBackupConfig();
+    await maybeShowSyncBootstrap();
     toast('登录成功');
   });
 }
@@ -640,7 +924,7 @@ function setView(view) {
   };
   els.viewTitle.textContent = titles[view];
   if (view === 'backup') {
-    els.viewTitle.textContent = '自动备份';
+    els.viewTitle.textContent = '自动同步';
   }
   renderBreadcrumb();
   renderCurrentView();
@@ -653,6 +937,7 @@ function setView(view) {
   }
   if (view === 'backup') {
     loadBackupConfig();
+    checkBackupSyncStatus();
   }
   if (view === 'transfers') {
     renderTransferView();
@@ -671,6 +956,7 @@ function refreshCurrentView() {
     loadQuick();
   } else if (state.view === 'backup') {
     loadBackupConfig();
+    checkBackupSyncStatus();
   } else if (state.view === 'transfers') {
     renderTransferView();
   } else if (state.view === 'nodes') {
@@ -741,6 +1027,323 @@ async function loadBackupConfig() {
   } catch (error) {
     handleError(error);
   }
+}
+
+async function maybeShowSyncBootstrap() {
+  if (!els.syncBootstrapModal || state.config?.backupSyncPromptDismissed) {
+    return;
+  }
+  if (!state.config?.baseUrl || state.backup.jobs.length > 0) {
+    return;
+  }
+  if (!api.getRemoteBackupDirs) {
+    return;
+  }
+
+  try {
+    const result = await api.getRemoteBackupDirs();
+    const remoteDirs = uniqueRemoteDirs(result?.dirs || []);
+    if (!remoteDirs.length) {
+      return;
+    }
+
+    state.syncBootstrap.remoteDirs = remoteDirs;
+    renderSyncBootstrap();
+    els.syncBootstrapModal.classList.remove('hidden');
+  } catch (error) {
+    // Older Worker deployments may not expose the new API yet; avoid blocking normal login.
+    console.warn('Failed to load remote backup dirs:', error);
+  }
+}
+
+function renderSyncBootstrap() {
+  const remoteDirs = state.syncBootstrap.remoteDirs;
+  els.syncRemoteList.replaceChildren();
+  els.syncRemoteCount.textContent = `${remoteDirs.length} 个远端文件夹`;
+  els.syncSelectAll.checked = remoteDirs.length > 0;
+
+  for (const remoteDir of remoteDirs) {
+    const row = document.createElement('label');
+    row.className = 'sync-remote-item';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'sync-remote-check';
+    checkbox.value = remoteDir;
+    checkbox.checked = true;
+    checkbox.addEventListener('change', updateSyncBootstrapSelectionState);
+
+    const icon = makeFileBadge({ type: 'folder', name: remoteDir });
+    icon.classList.add('sync-remote-icon');
+
+    const copy = document.createElement('span');
+    copy.className = 'sync-remote-copy';
+    const title = document.createElement('strong');
+    title.textContent = remoteDir.split('/').filter(Boolean).pop() || remoteDir;
+    const path = document.createElement('span');
+    path.className = 'muted';
+    path.textContent = `/${remoteDir}`;
+    copy.append(title, path);
+
+    row.append(checkbox, icon, copy);
+    els.syncRemoteList.append(row);
+  }
+
+  updateSyncBootstrapSelectionState();
+}
+
+function toggleSyncBootstrapSelection() {
+  const checked = Boolean(els.syncSelectAll.checked);
+  els.syncRemoteList.querySelectorAll('.sync-remote-check').forEach((checkbox) => {
+    checkbox.checked = checked;
+  });
+  updateSyncBootstrapSelectionState();
+}
+
+function updateSyncBootstrapSelectionState() {
+  const checks = [...els.syncRemoteList.querySelectorAll('.sync-remote-check')];
+  const selected = checks.filter((checkbox) => checkbox.checked);
+  els.syncSelectAll.checked = checks.length > 0 && selected.length === checks.length;
+  els.syncSelectAll.indeterminate = selected.length > 0 && selected.length < checks.length;
+  els.syncBootstrapConfirmButton.disabled = selected.length === 0;
+}
+
+function selectedSyncBootstrapDirs() {
+  return [...els.syncRemoteList.querySelectorAll('.sync-remote-check:checked')]
+    .map((checkbox) => checkbox.value)
+    .filter(Boolean);
+}
+
+async function dismissSyncBootstrap() {
+  await runTask(async () => {
+    state.config = await api.dismissBackupSyncPrompt();
+    els.syncBootstrapModal.classList.add('hidden');
+    renderConfig();
+    toast('已暂不启用多端同步');
+  });
+}
+
+async function confirmSyncBootstrap() {
+  const remoteDirs = selectedSyncBootstrapDirs();
+  if (!remoteDirs.length) {
+    toast('请至少选择一个同步文件夹');
+    return;
+  }
+
+  await runTask(async () => {
+    els.syncBootstrapConfirmButton.disabled = true;
+    els.syncBootstrapSkipButton.disabled = true;
+    try {
+      const result = await api.syncRemoteBackupFolders(remoteDirs);
+      if (result?.canceled) {
+        return;
+      }
+
+      state.config = await api.getConfig();
+      await loadBackupConfig();
+      renderConfig();
+      els.syncBootstrapModal.classList.add('hidden');
+      setView('backup');
+      toast('多端同步已开启');
+    } finally {
+      if (!els.syncBootstrapModal.classList.contains('hidden')) {
+        els.syncBootstrapConfirmButton.disabled = false;
+        els.syncBootstrapSkipButton.disabled = false;
+        updateSyncBootstrapSelectionState();
+      }
+    }
+  });
+}
+
+// --- 跨端同步比较 ---
+
+function extractLocalRemoteDirs() {
+  const seen = new Set();
+  const dirs = [];
+  for (const job of state.backup.jobs) {
+    const remotePath = joinRemote(job.remotePath || '');
+    if (!remotePath || seen.has(remotePath)) {
+      continue;
+    }
+    seen.add(remotePath);
+    dirs.push(remotePath);
+  }
+  return dirs;
+}
+
+async function checkBackupSyncStatus() {
+  if (!els.backupSyncStatus || !state.config?.baseUrl) {
+    return;
+  }
+  if (!api.getRemoteBackupDirs) {
+    return;
+  }
+
+  await runTask(async () => {
+    try {
+      const result = await api.getRemoteBackupDirs();
+      const remoteDirs = uniqueRemoteDirs(result?.dirs || []);
+      const localDirs = extractLocalRemoteDirs();
+
+      const remoteSet = new Set(remoteDirs);
+      const localSet = new Set(localDirs);
+
+      const synced = localDirs.filter((d) => remoteSet.has(d));
+      const localOnly = localDirs.filter((d) => !remoteSet.has(d));
+      const remoteOnly = remoteDirs.filter((d) => !localSet.has(d));
+
+      state.backupSyncDiff = { localOnly, remoteOnly, synced, checked: true };
+      renderBackupSyncDiff();
+    } catch (error) {
+      console.warn('Failed to check backup sync status:', error);
+      state.backupSyncDiff.checked = false;
+      els.backupSyncStatus.classList.add('hidden');
+    }
+  });
+}
+
+function renderBackupSyncDiff() {
+  if (!els.backupSyncStatus) {
+    return;
+  }
+
+  const { localOnly, remoteOnly, synced, checked } = state.backupSyncDiff;
+  if (!checked) {
+    els.backupSyncStatus.classList.add('hidden');
+    return;
+  }
+
+  els.backupSyncStatus.classList.remove('hidden');
+  const isInSync = localOnly.length === 0 && remoteOnly.length === 0;
+
+  els.backupSyncInSync.classList.toggle('hidden', !isInSync);
+  els.backupSyncDiff.classList.toggle('hidden', isInSync);
+
+  if (isInSync) {
+    return;
+  }
+
+  // Render local-only dirs
+  els.backupSyncLocalOnly.classList.toggle('hidden', localOnly.length === 0);
+  if (localOnly.length > 0) {
+    els.backupSyncLocalOnlyList.replaceChildren();
+    for (const dir of localOnly) {
+      els.backupSyncLocalOnlyList.append(makeSyncDiffItem(dir, 'local'));
+    }
+  }
+
+  // Render remote-only dirs
+  els.backupSyncRemoteOnly.classList.toggle('hidden', remoteOnly.length === 0);
+  if (remoteOnly.length > 0) {
+    els.backupSyncRemoteOnlyList.replaceChildren();
+    for (const dir of remoteOnly) {
+      els.backupSyncRemoteOnlyList.append(makeSyncDiffItem(dir, 'remote'));
+    }
+  }
+}
+
+function makeSyncDiffItem(dirPath, source) {
+  const row = document.createElement('div');
+  row.className = 'sync-diff-item';
+
+  const icon = document.createElement('span');
+  icon.className = 'material-icons-round';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = source === 'local' ? 'computer' : 'cloud';
+
+  const copy = document.createElement('span');
+  copy.className = 'sync-diff-copy';
+  const name = document.createElement('strong');
+  name.textContent = dirPath.split('/').filter(Boolean).pop() || dirPath;
+  const pathEl = document.createElement('span');
+  pathEl.className = 'muted';
+  pathEl.textContent = `/${dirPath}`;
+  pathEl.title = dirPath;
+  copy.append(name, pathEl);
+
+  const actions = document.createElement('div');
+  actions.className = 'sync-diff-actions';
+
+  if (source === 'local') {
+    const pushBtn = document.createElement('button');
+    pushBtn.className = 'secondary small';
+    pushBtn.title = '推送到远端';
+    pushBtn.innerHTML = '<span class="material-icons-round" aria-hidden="true">cloud_upload</span><span>推送</span>';
+    pushBtn.addEventListener('click', () => pushSingleDirToRemote(dirPath));
+    actions.append(pushBtn);
+  } else {
+    const pullBtn = document.createElement('button');
+    pullBtn.className = 'secondary small';
+    pullBtn.title = '同步到本机';
+    pullBtn.innerHTML = '<span class="material-icons-round" aria-hidden="true">cloud_download</span><span>同步</span>';
+    pullBtn.addEventListener('click', () => pullSingleRemoteDir(dirPath));
+    actions.append(pullBtn);
+  }
+
+  row.append(icon, copy, actions);
+  return row;
+}
+
+async function pushLocalDirsToRemote() {
+  const localOnly = state.backupSyncDiff.localOnly;
+  if (!localOnly.length) {
+    toast('没有需要推送的文件夹');
+    return;
+  }
+
+  await runTask(async () => {
+    const allRemoteDirs = uniqueRemoteDirs([
+      ...extractLocalRemoteDirs(),
+      ...localOnly
+    ]);
+    await api.pushBackupDirsToRemote(allRemoteDirs);
+    toast(`已推送 ${localOnly.length} 个文件夹配置到远端`);
+    await checkBackupSyncStatus();
+  });
+}
+
+async function pushSingleDirToRemote(dirPath) {
+  await runTask(async () => {
+    const allRemoteDirs = extractLocalRemoteDirs();
+    await api.pushBackupDirsToRemote(allRemoteDirs);
+    toast(`已推送 "${dirPath.split('/').filter(Boolean).pop() || dirPath}" 到远端`);
+    await checkBackupSyncStatus();
+  });
+}
+
+async function pullRemoteDirsToLocal() {
+  const remoteOnly = state.backupSyncDiff.remoteOnly;
+  if (!remoteOnly.length) {
+    toast('没有需要同步的远端文件夹');
+    return;
+  }
+
+  await runTask(async () => {
+    els.backupSyncPullRemoteButton.disabled = true;
+    try {
+      const result = await api.syncRemoteBackupFolders(remoteOnly);
+      if (result?.canceled) {
+        return;
+      }
+      await loadBackupConfig();
+      toast(`已同步 ${remoteOnly.length} 个远端文件夹到本机`);
+      await checkBackupSyncStatus();
+    } finally {
+      els.backupSyncPullRemoteButton.disabled = false;
+    }
+  });
+}
+
+async function pullSingleRemoteDir(dirPath) {
+  await runTask(async () => {
+    const result = await api.syncRemoteBackupFolders([dirPath]);
+    if (result?.canceled) {
+      return;
+    }
+    await loadBackupConfig();
+    toast(`已同步 "${dirPath.split('/').filter(Boolean).pop() || dirPath}" 到本机`);
+    await checkBackupSyncStatus();
+  });
 }
 
 async function loadStorage() {
@@ -893,6 +1496,7 @@ function renderFiles() {
     parentPath: state.currentPath,
     onFolder: (name) => navigateFiles(joinRemote(state.currentPath, name)),
     onDownload: (file) => downloadFile(joinRemote(state.currentPath, file.name), file.name),
+    onPreview: (file) => openFilePreview(joinRemote(state.currentPath, file.name), file),
     onRename: (item) => renameItem(item, state.currentPath),
     onDelete: (item) => deleteItem(item, state.currentPath),
     onCopy: (item) => copyToClipboard(item, state.currentPath, 'copy'),
@@ -906,6 +1510,7 @@ function renderFiles() {
     parentPath: state.currentPath,
     onFolder: (name) => navigateFiles(joinRemote(state.currentPath, name)),
     onDownload: (file) => downloadFile(joinRemote(state.currentPath, file.name), file.name),
+    onPreview: (file) => openFilePreview(joinRemote(state.currentPath, file.name), file),
     onRename: (item) => renameItem(item, state.currentPath),
     onDelete: (item) => deleteItem(item, state.currentPath),
     onCopy: (item) => copyToClipboard(item, state.currentPath, 'copy'),
@@ -1117,6 +1722,30 @@ function openAlbumItem(remotePath, file, kind) {
   }], index);
 }
 
+// 双击文件预览（支持图片、视频、音频、纯文本）
+async function openFilePreview(remotePath, file) {
+  const kind = mediaKind(file.name);
+
+  // 可预览类型：图片、视频、音频、纯文本
+  const previewable = ['image', 'video', 'audio', 'document', 'code'].includes(kind) ||
+    ['txt', 'md', 'log', 'json', 'xml', 'yml', 'yaml', 'csv', 'ini', 'cfg', 'conf'].includes(extension(file.name));
+
+  if (!previewable) {
+    toast('此文件类型暂不支持预览');
+    return;
+  }
+
+  const item = {
+    file,
+    name: file.name,
+    remotePath,
+    kind,
+    meta: `${formatBytes(file.size)} · ${formatDate(file.uploaded)}`
+  };
+
+  openMediaViewer([item], 0);
+}
+
 function openMediaViewer(items, index = 0) {
   state.viewer.items = items;
   state.viewer.index = Math.min(Math.max(index, 0), items.length - 1);
@@ -1215,9 +1844,46 @@ function makeViewerContent(item, dataUrl) {
     return video;
   }
 
+  if (dataUrl && item.kind === 'audio') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'viewer-audio-wrap';
+    const icon = document.createElement('div');
+    icon.className = 'viewer-audio-icon';
+    icon.append(mediaPlaceholder('AUDIO'));
+    const name = document.createElement('div');
+    name.className = 'viewer-audio-name';
+    name.textContent = item.name;
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.autoplay = true;
+    audio.src = dataUrl;
+    wrapper.append(icon, name, audio);
+    return wrapper;
+  }
+
+  if (dataUrl && (item.kind === 'document' || item.kind === 'code')) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'viewer-text-wrap';
+    const pre = document.createElement('pre');
+    pre.className = 'viewer-text-content';
+    try {
+      const base64 = dataUrl.split(',')[1] || '';
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      pre.textContent = new TextDecoder('utf-8').decode(bytes);
+    } catch {
+      pre.textContent = '[无法解码文本内容]';
+    }
+    wrapper.append(pre);
+    return wrapper;
+  }
+
   const empty = document.createElement('div');
   empty.className = 'viewer-empty';
-  empty.append(mediaPlaceholder(item.kind === 'video' ? 'VIDEO' : 'FILE'));
+  empty.append(mediaPlaceholder(item.kind === 'video' ? 'VIDEO' : item.kind === 'audio' ? 'AUDIO' : 'FILE'));
   const text = document.createElement('strong');
   text.textContent = '暂不支持预览';
   empty.append(text);
@@ -1264,9 +1930,10 @@ function renderQuick() {
       type: 'file',
       name: file.name,
       meta: `${formatBytes(file.size)} · ${formatDate(file.uploaded)}`,
-      action: '下载',
-      onAction: () => downloadFile(file.name, file.name),
+      action: '预览',
+      onAction: () => openFilePreview(file.name, file),
       contextActions: () => [
+        menuAction('预览', 'preview-icon', () => openFilePreview(file.name, file)),
         menuAction('下载', 'download-icon', () => downloadFile(file.name, file.name)),
         menuAction('刷新', 'refresh-icon', loadQuick)
       ]
@@ -1337,13 +2004,13 @@ function makeBackupJobItem(job) {
   const name = document.createElement('strong');
   name.textContent = job.name || job.localPath;
   name.title = job.localPath;
-  const badge = document.createElement('span');
-  badge.className = `badge ${job.enabled === false ? 'off' : ''}`;
-  badge.textContent = job.kind === 'album' ? '相册' : (job.enabled === false ? '已停用' : '已启用');
+  const kindBadge = document.createElement('span');
+  kindBadge.className = 'badge';
+  kindBadge.textContent = job.kind === 'album' ? '相册' : '普通';
   const stateBadge = document.createElement('span');
   stateBadge.className = `badge ${job.enabled === false ? 'off' : ''}`;
   stateBadge.textContent = job.enabled === false ? '已停用' : '已启用';
-  title.append(name, badge, stateBadge);
+  title.append(name, kindBadge, stateBadge);
 
   const paths = document.createElement('div');
   paths.className = 'backup-job-paths muted';
@@ -1355,7 +2022,7 @@ function makeBackupJobItem(job) {
   const stats = status?.stats;
   const statText = stats
     ? `扫描 ${stats.scanned || 0}，上传 ${stats.uploaded || 0}，跳过 ${stats.skipped || 0}，失败 ${stats.failed || 0}`
-    : (job.lastMessage || '等待首次备份');
+    : (job.lastMessage || '等待首次同步');
   const timeText = job.lastRunAt ? `上次：${formatDate(job.lastRunAt)}` : '尚未运行';
   meta.textContent = status?.phase ? `${status.phase} · ${statText}` : `${timeText} · ${statText}`;
 
@@ -1372,7 +2039,7 @@ function makeBackupJobItem(job) {
   const actions = document.createElement('div');
   actions.className = 'backup-job-actions';
   actions.append(
-    actionButton('立即备份', () => runBackupNow(job.id)),
+    actionButton('立即同步', () => runBackupNow(job.id)),
     actionButton(job.enabled === false ? '启用' : '停用', () => toggleBackupJob(job)),
     actionButton('删除', () => removeBackupJob(job), 'danger')
   );
@@ -1400,7 +2067,7 @@ function renderFileCards(options) {
       item: { ...file, type: 'file' },
       meta: `${formatBytes(file.size)} · ${formatDate(file.uploaded)}`,
       parentPath: options.parentPath,
-      onOpen: () => options.onDownload(file),
+      onOpen: () => options.onPreview(file),
       onDownload: () => options.onDownload(file),
       onRename: options.onRename,
       onDelete: options.onDelete,
@@ -1489,6 +2156,7 @@ function buildGridCardActions(options) {
   if (isFolder) {
     actions.push(menuAction('打开', 'open-icon', options.onOpen));
   } else {
+    actions.push(menuAction('预览', 'preview-icon', options.onOpen));
     actions.push(menuAction('下载', 'download-icon', options.onDownload));
   }
   actions.push(menuSeparator());
@@ -1527,7 +2195,7 @@ function renderRows(options) {
       size: formatBytes(file.size),
       uploaded: formatDate(file.uploaded),
       parentPath: options.parentPath,
-      onOpen: () => options.onDownload(file),
+      onOpen: () => options.onPreview(file),
       onDownload: () => options.onDownload(file),
       onRename: options.onRename,
       onDelete: options.onDelete,
@@ -1585,20 +2253,33 @@ function makeRow(options) {
   const actions = document.createElement('div');
   actions.className = 'row-actions';
 
+  // 主操作
   if (options.item.type === 'folder') {
     actions.append(actionButton('打开', options.onOpen));
   } else {
-    actions.append(actionButton('下载', options.onDownload));
+    actions.append(actionButton('预览', options.onOpen));
   }
 
-  actions.append(actionButton('重命名', () => options.onRename(options.item)));
-  if (options.onCopy) {
-    actions.append(actionButton('复制', () => options.onCopy(options.item)));
-  }
-  if (options.onCut) {
-    actions.append(actionButton('剪切', () => options.onCut(options.item)));
-  }
-  actions.append(actionButton('删除', () => options.onDelete(options.item), 'danger'));
+  // 更多操作按钮
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
+  moreBtn.className = 'secondary';
+  moreBtn.title = '更多操作';
+  moreBtn.append(materialIcon('more_horiz'));
+  moreBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    hideContextMenu();
+    markContextElement(row);
+    showItemContextMenu(event, {
+      item: options.item,
+      parentPath: options.parentPath,
+      onOpen: options.onOpen,
+      onDownload: options.onDownload,
+      onRename: () => options.onRename(options.item),
+      onDelete: () => options.onDelete(options.item)
+    });
+  });
+  actions.append(moreBtn);
 
   actionsCell.append(actions);
   row.append(nameCell, sizeCell, uploadedCell, actionsCell);
@@ -1667,7 +2348,7 @@ function updateActionBar() {
     ? `已选中 ${count} 项`
     : clipCount
       ? `${state.clipboard.action === 'cut' ? '剪切' : '复制'} ${clipCount} 项待粘贴`
-      : '单击选择文件，双击打开';
+      : '单击选择文件，双击预览';
   els.copySelectedButton.disabled = count === 0;
   els.cutSelectedButton.disabled = count === 0;
   els.renameSelectedButton.disabled = count !== 1;
@@ -1749,9 +2430,20 @@ async function downloadSelectedItems() {
     toast('请选择要下载的文件');
     return;
   }
+  const batchKey = makeClientBatchKey('download');
+  const batchNames = files.map((item) => item.name);
+  let done = 0;
   for (const item of files) {
-    await downloadFile(joinRemote(state.currentPath, item.name), item.name);
+    const result = await downloadFile(joinRemote(state.currentPath, item.name), item.name, {
+      batchKey,
+      batchTotal: files.length,
+      batchNames
+    });
+    if (!result?.canceled) {
+      done += 1;
+    }
   }
+  toast(done === files.length ? `已下载 ${done} 个文件` : `下载完成 ${done}/${files.length} 个文件`);
 }
 
 async function deleteSelectedItems() {
@@ -1792,7 +2484,6 @@ function makeFileBadge(item) {
   const kind = fileKind(item);
   badge.className = `file-badge file-kind-${kind}`;
   badge.setAttribute('aria-hidden', 'true');
-  badge.append(materialIcon(MATERIAL_ICON_BY_KIND[kind] || MATERIAL_ICON_BY_KIND.generic));
   return badge;
 }
 
@@ -1871,6 +2562,7 @@ function folderContextActions({ name, parentPath, onOpen }) {
 function fileContextActions({ file, parentPath, remotePath }) {
   const item = { ...file, type: 'file' };
   return [
+    menuAction('预览', 'preview-icon', () => openFilePreview(remotePath, file)),
     menuAction('下载', 'download-icon', () => downloadFile(remotePath, file.name)),
     menuSeparator(),
     menuAction('重命名', 'rename-icon', () => renameItem(item, parentPath)),
@@ -1895,6 +2587,7 @@ function showItemContextMenu(event, options) {
   if (isFolder) {
     actions.push(menuAction('打开', 'open-icon', options.onOpen));
   } else {
+    actions.push(menuAction('预览', 'preview-icon', options.onOpen));
     actions.push(menuAction('下载', 'download-icon', options.onDownload));
   }
   actions.push(menuSeparator());
@@ -1933,7 +2626,7 @@ function showViewContextMenu(event) {
     menuItems.push(menuAction('粘贴', 'paste-icon', pasteFromClipboard));
     menuItems.push(menuSeparator());
   } else if (state.view === 'album') {
-    menuItems.push(menuAction('相册备份', 'backup', selectAlbumBackupFolder));
+    menuItems.push(menuAction('相册同步', 'backup', selectAlbumBackupFolder));
     menuItems.push(menuSeparator());
   }
 
@@ -2361,30 +3054,56 @@ function renderTransferBubble() {
   const transfers = [...state.transfers.values()];
   const total = transfers.length;
   const done = transfers.filter((transfer) => transfer.status === 'done').length;
+  const failed = transfers.filter((transfer) => transfer.status === 'error').length;
+  const canceled = transfers.filter((transfer) => transfer.status === 'canceled').length;
   const running = transfers
     .filter((transfer) => transfer.status === 'running')
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
   const current = running[0] || null;
   const currentPercent = current ? progressPercent(current) : 0;
   const totalPercent = aggregateProgressPercent(transfers);
+  const visiblePercent = running.length > 1 ? totalPercent : currentPercent;
   const hasActiveUpload = running.some((transfer) => transfer.type === 'upload');
   const hasActiveDownload = running.some((transfer) => transfer.type === 'download');
   const isIdle = total === 0 || (!running.length && done !== total);
   const isDone = total > 0 && !running.length && done === total;
   const isSingle = running.length === 1 && total === 1;
+  const hasProblem = failed > 0;
 
-  els.transferBubbleCount.textContent = isSingle ? '' : `${done}/${total}`;
-  els.transferBubbleProgress.textContent = isSingle
-    ? `${currentPercent}%`
-    : `${currentPercent}%/${totalPercent}%`;
-  els.transferBubble.style.setProperty('--current-progress', `${currentPercent * 3.6}deg`);
-  els.transferBubble.style.setProperty('--total-progress', `${totalPercent * 3.6}deg`);
+  let labelText = '传输列表';
+  let countText = '空闲';
+  let progressText = '待命';
+
+  if (running.length) {
+    labelText = isSingle ? (current?.type === 'upload' ? '上传中' : '下载中') : '传输中';
+    countText = isSingle ? '1/1' : `${done}/${total}`;
+    progressText = `${visiblePercent}%`;
+  } else if (isDone) {
+    labelText = '已完成';
+    countText = `${done}/${total}`;
+    progressText = '100%';
+  } else if (hasProblem) {
+    labelText = '有异常';
+    countText = `${done}/${total}`;
+    progressText = `${totalPercent}%`;
+  } else if (canceled > 0) {
+    labelText = '已停止';
+    countText = `${done}/${total}`;
+    progressText = `${totalPercent}%`;
+  }
+
+  els.transferBubbleLabel.textContent = labelText;
+  els.transferBubbleCount.textContent = countText;
+  els.transferBubbleProgress.textContent = progressText;
+  els.transferBubble.style.setProperty('--bubble-bar', `${Math.max(0, Math.min(100, running.length ? visiblePercent : totalPercent))}%`);
   els.transferBubble.classList.toggle('has-upload', hasActiveUpload);
   els.transferBubble.classList.toggle('has-download', hasActiveDownload);
   els.transferBubble.classList.toggle('is-active', hasActiveUpload || hasActiveDownload);
   els.transferBubble.classList.toggle('is-idle', isIdle);
+  els.transferBubble.classList.toggle('is-empty', total === 0);
   els.transferBubble.classList.toggle('is-done', isDone);
   els.transferBubble.classList.toggle('is-single', isSingle);
+  els.transferBubble.classList.toggle('has-problem', hasProblem);
 }
 
 function renderTransferView() {
@@ -2636,7 +3355,7 @@ async function saveBackupSettings() {
     state.backup.intervalMinutes = Number(config.intervalMinutes) || intervalMinutes;
     state.backup.autoStart = Boolean(config.autoStart);
     renderBackup();
-    toast('自动备份设置已保存');
+    toast('自动同步设置已保存');
   });
 }
 
@@ -2651,7 +3370,8 @@ async function selectBackupFolder() {
     state.backup.intervalMinutes = Number(config.intervalMinutes) || state.backup.intervalMinutes;
     state.backup.autoStart = Boolean(config.autoStart);
     renderBackup();
-    toast('已添加自动备份文件夹');
+    checkBackupSyncStatus();
+    toast('已添加自动同步文件夹');
   });
 }
 
@@ -2666,7 +3386,8 @@ async function selectAlbumBackupFolder() {
     state.backup.intervalMinutes = Number(config.intervalMinutes) || state.backup.intervalMinutes;
     state.backup.autoStart = Boolean(config.autoStart);
     renderBackup();
-    toast('已添加相册备份，将同步图片和视频到相册');
+    checkBackupSyncStatus();
+    toast('已添加相册同步，将同步图片和视频到相册');
     await loadAlbum(state.albumPath);
   });
 }
@@ -2675,7 +3396,7 @@ async function runBackupNow(jobId) {
   await runTask(async () => {
     await api.runBackupNow(jobId || undefined);
     await loadBackupConfig();
-    toast('备份任务已执行');
+    toast('同步任务已执行');
   });
 }
 
@@ -2689,8 +3410,8 @@ async function toggleBackupJob(job) {
 
 async function removeBackupJob(job) {
   const ok = await openConfirmDialog({
-    title: '删除自动备份',
-    message: `确定删除“${job.name || job.localPath}”的自动备份任务吗？远端已备份文件不会被删除。`,
+    title: '删除自动同步',
+    message: `确定删除“${job.name || job.localPath}”的自动同步任务吗？远端已同步文件不会被删除。`,
     confirmText: '删除',
     danger: true
   });
@@ -2703,17 +3424,25 @@ async function removeBackupJob(job) {
     state.backup.jobs = Array.isArray(config.jobs) ? config.jobs : [];
     state.backup.statuses.delete(job.id);
     renderBackup();
-    toast('已删除自动备份任务');
+    checkBackupSyncStatus();
+    toast('已删除自动同步任务');
   });
 }
 
-async function downloadFile(remotePath, name) {
+async function downloadFile(remotePath, name, options = {}) {
+  let downloadResult = null;
   await runTask(async () => {
-    const result = await api.downloadFile(remotePath, name);
-    if (!result?.canceled) {
+    const result = await api.downloadFile(remotePath, name, options);
+    downloadResult = result;
+    if (!result?.canceled && !options.batchKey) {
       toast('下载完成');
     }
   });
+  return downloadResult;
+}
+
+function makeClientBatchKey(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 async function createFolder() {
@@ -2905,6 +3634,10 @@ function setBusy(isBusy) {
 
 function handleError(error) {
   const message = friendlyErrorMessage(error);
+  if (message.includes('401') && !state.config?.baseUrl) {
+    showSetupWizard();
+    return;
+  }
   if (message.includes('401')) {
     showAuth();
   }
@@ -2938,6 +3671,281 @@ function showAuth() {
 function hideAuth() {
   els.authModal.classList.add('hidden');
 }
+
+// ═══════════════════════════════════════════════════════════
+// 首次使用引导配置向导
+// ═══════════════════════════════════════════════════════════
+
+function showSetupWizard() {
+  els.setupWizard.classList.remove('hidden');
+  els.authModal.classList.add('hidden');
+  els.setupStep1.classList.remove('hidden');
+  els.setupStep2.classList.add('hidden');
+  els.setupStep3.classList.add('hidden');
+  updateSetupStepDots(1);
+  els.setupBaseUrl.value = state.config?.baseUrl || '';
+}
+
+function hideSetupWizard() {
+  els.setupWizard.classList.add('hidden');
+}
+
+function updateSetupStepDots(step) {
+  const dots = els.setupWizard.querySelectorAll('.setup-step-dot');
+  dots.forEach((dot) => {
+    const dotStep = parseInt(dot.dataset.step, 10);
+    dot.classList.remove('active', 'done');
+    if (dotStep < step) {
+      dot.classList.add('done');
+    } else if (dotStep === step) {
+      dot.classList.add('active');
+    }
+  });
+}
+
+// 切换步骤时触发动画
+function transitionSetupStep(fromEl, toEl, direction) {
+  if (!fromEl || !toEl) return;
+  fromEl.style.animation = `stepSlideOut${direction === 'forward' ? 'Left' : 'Right'} 200ms cubic-bezier(0.22, 1, 0.36, 1) both`;
+  fromEl.addEventListener('animationend', function handler() {
+    fromEl.removeEventListener('animationend', handler);
+    fromEl.classList.add('hidden');
+    fromEl.style.animation = '';
+    toEl.classList.remove('hidden');
+    toEl.style.animation = 'stepSlideIn 280ms cubic-bezier(0.22, 1, 0.36, 1) both';
+    toEl.addEventListener('animationend', function h2() {
+      toEl.removeEventListener('animationend', h2);
+      toEl.style.animation = '';
+    });
+  });
+}
+
+async function setupStep1Submit(event) {
+  event.preventDefault();
+  const baseUrl = els.setupBaseUrl.value.trim();
+  if (!baseUrl) {
+    toast('请输入 API 基准地址');
+    return;
+  }
+
+  await runTask(async () => {
+    state.config = await api.setConfig({ baseUrl });
+    renderConfig();
+
+    // 尝试无密码登录以检查连接
+    try {
+      const result = await api.testConnection();
+      if (result?.ok) {
+        transitionSetupStep(els.setupStep1, els.setupStep2, 'forward');
+        updateSetupStepDots(2);
+      } else {
+        toast('连接测试未通过，请检查 API 地址');
+      }
+    } catch {
+      // 即使测试失败也允许继续
+      transitionSetupStep(els.setupStep1, els.setupStep2, 'forward');
+      updateSetupStepDots(2);
+    }
+  });
+}
+
+async function setupStep2Submit(event) {
+  event.preventDefault();
+  const password = els.setupPassword.value || '';
+
+  await runTask(async () => {
+    try {
+      const result = await api.login(password);
+      if (result?.ok === false) {
+        els.setupLoginStatus.classList.remove('hidden');
+        els.setupLoginStatus.textContent = '登录失败，请检查密码或服务端配置';
+        els.setupLoginStatus.className = 'setup-status error';
+        return;
+      }
+
+      els.setupLoginStatus.classList.add('hidden');
+      transitionSetupStep(els.setupStep2, els.setupStep3, 'forward');
+      updateSetupStepDots(3);
+
+      // 更新摘要
+      els.setupSummaryUrl.textContent = displayBaseUrlHost(state.config?.baseUrl || '');
+      els.setupSummaryDownload.textContent = state.config?.downloadDir || '默认下载文件夹';
+    } catch (error) {
+      els.setupLoginStatus.classList.remove('hidden');
+      els.setupLoginStatus.textContent = `连接失败：${error.message}`;
+      els.setupLoginStatus.className = 'setup-status error';
+    }
+  });
+}
+
+function setupGoToStep1() {
+  transitionSetupStep(els.setupStep2, els.setupStep1, 'back');
+  updateSetupStepDots(1);
+}
+
+async function skipSetupWizard() {
+  hideSetupWizard();
+  state.config = await api.getConfig();
+  await Promise.allSettled([loadStorage(), loadFiles(''), loadQuick(), refreshClipboardState()]);
+  await maybeShowSyncBootstrap();
+}
+
+async function setupSelectDownloadDir() {
+  const result = await api.selectDownloadDir();
+  if (result?.canceled) {
+    return;
+  }
+  if (result?.filePath) {
+    state.config = await api.setConfig({ downloadDir: result.filePath });
+    renderConfig();
+    els.setupSummaryDownload.textContent = result.filePath;
+  }
+}
+
+async function finishSetupWizard() {
+  await runTask(async () => {
+    state.config = await api.getConfig();
+    hideSetupWizard();
+    renderConfig();
+    await Promise.allSettled([loadStorage(), loadFiles(''), loadQuick(), refreshClipboardState()]);
+    await loadBackupConfig();
+    await maybeShowSyncBootstrap();
+    toast('欢迎使用 R2 Cloud Drive！');
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// 重置应用数据
+// ═══════════════════════════════════════════════════════════
+
+async function resetAppData() {
+  const confirmed = await openConfirmDialog({
+    title: '重置应用数据',
+    message: '确定要清除所有本地配置、登录状态和缓存数据吗？应用将恢复为首次使用状态并重新启动。此操作不可撤销。',
+    confirmText: '确定重置',
+    danger: true
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  await runTask(async () => {
+    try {
+      // 清除 localStorage
+      localStorage.clear();
+      // 调用主进程清除配置文件
+      await api.resetClearAll();
+      toast('数据已清除，应用即将重启...');
+      // 延迟重启以确保 toast 可见
+      setTimeout(async () => {
+        try {
+          await api.relaunchApp();
+        } catch {
+          // 如果 relaunch 不可用，关闭窗口
+          api.closeWindow();
+        }
+      }, 1500);
+    } catch (error) {
+      toast(`重置失败：${error.message}`);
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// 多端同步更新通知
+// ═══════════════════════════════════════════════════════════
+
+function showSyncUpdateNotification(payload) {
+  if (!els.syncUpdateModal || !payload?.updates?.length) {
+    return;
+  }
+
+  const updates = payload.updates;
+  state.pendingSyncUpdates = updates;
+
+  // 更新描述
+  els.syncUpdateDesc.textContent =
+    `检测到 ${updates.length} 个文件在云端有更新（可能来自其他设备），是否同步到本机？`;
+
+  // 渲染文件列表
+  els.syncUpdateFileList.replaceChildren();
+  const maxShow = Math.min(updates.length, 10);
+  for (let i = 0; i < maxShow; i++) {
+    const update = updates[i];
+    const item = document.createElement('div');
+    item.className = 'sync-update-file-item';
+
+    const iconWrap = makeFileBadge({ name: update.relativePath || update.fileName });
+    iconWrap.classList.add('sync-update-file-icon');
+
+    const info = document.createElement('div');
+    info.className = 'sync-update-file-info';
+    const name = document.createElement('strong');
+    name.textContent = update.fileName;
+    name.title = update.fileName;
+    const meta = document.createElement('span');
+    meta.className = 'muted';
+    meta.textContent = `${update.jobName || update.remotePath} · ${formatBytes(update.fileSize || 0)} · ${formatDate(update.uploaded)}`;
+
+    info.append(name, meta);
+    item.append(iconWrap, info);
+    els.syncUpdateFileList.append(item);
+  }
+
+  if (updates.length > maxShow) {
+    const more = document.createElement('div');
+    more.className = 'sync-update-file-item muted';
+    more.textContent = `…以及另外 ${updates.length - maxShow} 个文件`;
+    els.syncUpdateFileList.append(more);
+  }
+
+  els.syncUpdateModal.classList.remove('hidden');
+}
+
+async function dismissSyncUpdate() {
+  els.syncUpdateModal.classList.add('hidden');
+  state.pendingSyncUpdates = [];
+  await api.dismissSyncUpdate().catch(() => {});
+}
+
+async function enableAutoSyncAndApply() {
+  await runTask(async () => {
+    // 启用自动同步
+    state.config = await api.setConfig({ autoSyncEnabled: true });
+    await api.setAutoSyncEnabled(true).catch(() => {});
+
+    let updates = state.pendingSyncUpdates;
+    if (!updates.length) {
+      const result = await api.checkRemoteFileUpdates().catch(() => null);
+      updates = result?.updates || [];
+    }
+
+    let applyResult = null;
+    try {
+      if (updates.length && api.applySyncUpdates) {
+        applyResult = await api.applySyncUpdates(updates);
+      }
+
+      if (applyResult?.failed) {
+        toast(`已启用多端自动同步，${applyResult.applied || 0} 个文件已同步，${applyResult.failed} 个失败`);
+      } else if (applyResult?.applied) {
+        toast(`已启用多端自动同步，已同步 ${applyResult.applied} 个文件`);
+      } else {
+        toast('已启用多端自动同步');
+      }
+    } catch (error) {
+      console.warn('Apply sync updates failed:', error);
+      toast('已启用多端自动同步');
+    }
+
+    state.pendingSyncUpdates = [];
+    renderConfig();
+    els.syncUpdateModal.classList.add('hidden');
+    await refreshCurrentView();
+  });
+}
+
+// 显示确认对话框（复用现有 dialogModal）
 
 function toast(message) {
   els.toast.textContent = message;
@@ -2977,6 +3985,22 @@ function joinRemote(...segments) {
     .replace(/^\/+/, '')
     .replace(/\/{2,}/g, '/')
     .replace(/\/+$/, '');
+}
+
+function uniqueRemoteDirs(dirs) {
+  const seen = new Set();
+  const normalized = [];
+
+  for (const dir of Array.isArray(dirs) ? dirs : []) {
+    const remotePath = joinRemote(dir);
+    if (!remotePath || seen.has(remotePath)) {
+      continue;
+    }
+    seen.add(remotePath);
+    normalized.push(remotePath);
+  }
+
+  return normalized;
 }
 
 function clipboardPasteItemNames(items) {
@@ -3080,11 +4104,20 @@ function filterNamed(items) {
 
 function mediaKind(fileName) {
   const ext = extension(fileName);
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif', 'svg'].includes(ext)) {
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif', 'svg', 'heic'].includes(ext)) {
     return 'image';
   }
-  if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'].includes(ext)) {
+  if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv'].includes(ext)) {
     return 'video';
+  }
+  if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'wma', 'opus'].includes(ext)) {
+    return 'audio';
+  }
+  if (['js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'yml', 'yaml', 'sh', 'ps1', 'py', 'go', 'rs', 'java', 'cpp', 'c', 'h', 'hpp'].includes(ext)) {
+    return 'code';
+  }
+  if (['txt', 'md', 'log', 'csv', 'ini', 'cfg', 'conf', 'rtf'].includes(ext)) {
+    return 'document';
   }
   return 'file';
 }

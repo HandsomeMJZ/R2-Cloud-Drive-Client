@@ -203,7 +203,7 @@
       actions.append(
         mobileMoreButton('photo_library', '相册同步', () => addAlbumBackupFolder()),
         mobileMoreButton('folder_open', '选择相册路径', () => chooseAndEnableAlbumFolder()),
-        mobileMoreButton('backup', '备份状态', () => backup?.click()),
+        mobileMoreButton('backup', '同步状态', () => backup?.click()),
         mobileMoreButton('hub', '存储节点', () => nodes?.click())
       );
       settingsView.prepend(actions);

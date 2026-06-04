@@ -1,6 +1,6 @@
 {
   "name": "r2-cloud-drive-client",
-  "version": "0.1.0",
+  "version": "1.1.8",
   "description": "Electron desktop client for the R2 Cloud Drive API.",
   "main": "src/main/main.js",
   "author": "",
@@ -55,8 +55,12 @@
       "category": "Utility"
     },
     "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
+      "installerIcon": "assets/icons/icon.ico",
+      "uninstallerIcon": "assets/icons/icon.ico",
       "shortcutName": "R2 Cloud Drive"
     }
   },

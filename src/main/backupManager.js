@@ -3,7 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { normalizeRemotePath } = require('./apiClient');
 
-const DEFAULT_BACKUP_ROOT = '备份';
+const DEFAULT_BACKUP_ROOT = '同步';
 const DEFAULT_ALBUM_ROOT = '相册';
 const MEDIA_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif', '.heic', '.heif', '.svg',
@@ -11,6 +11,15 @@ const MEDIA_EXTENSIONS = new Set([
 ]);
 const BACKUP_UPLOAD_CONCURRENCY = 8;
 const SCAN_CONCURRENCY = 16;
+const MIN_STABLE_FILE_AGE_MS = 2000;
+const TEMP_FILE_PATTERNS = [
+  /\.tmp$/i,
+  /\.temp$/i,
+  /\.part$/i,
+  /\.crdownload$/i,
+  /\.download$/i,
+  /^~\$/i
+];
 
 class BackupManager {
   constructor(client, emitBackup, emitTransfer) {
@@ -20,6 +29,7 @@ class BackupManager {
     this.runningJobs = new Set();
     this.remoteDirs = new Set();
     this.timer = null;
+    this.runAllPromise = null;
   }
 
   getConfig() {
@@ -98,6 +108,14 @@ class BackupManager {
     });
   }
 
+  addSyncedJob(localPath, remotePath) {
+    return this.addJob(localPath, {
+      kind: remotePath === DEFAULT_ALBUM_ROOT || remotePath.startsWith(`${DEFAULT_ALBUM_ROOT}/`) ? 'album' : 'folder',
+      mediaOnly: false,
+      remotePath
+    });
+  }
+
   removeJob(id) {
     const jobs = this.getConfig().jobs.filter((job) => job.id !== id);
     return this.setConfig({ jobs });
@@ -118,7 +136,11 @@ class BackupManager {
 
   start() {
     this.restartTimer();
-    windowSetTimeout(() => this.runAll({ reason: 'startup' }), 2500);
+    windowSetTimeout(() => {
+      if (this.hasRunnableJobs()) {
+        this.runAll({ reason: 'startup' }).catch(() => {});
+      }
+    }, 2500);
   }
 
   stop() {
@@ -131,12 +153,26 @@ class BackupManager {
   restartTimer() {
     this.stop();
     const intervalMinutes = Math.max(1, Number(this.client.getConfig().backupIntervalMinutes) || 15);
+    if (!this.hasRunnableJobs()) {
+      return;
+    }
     this.timer = setInterval(() => {
       this.runAll({ reason: 'schedule' });
     }, intervalMinutes * 60 * 1000);
   }
 
   async runAll(options = {}) {
+    if (this.runAllPromise) {
+      return this.runAllPromise;
+    }
+
+    this.runAllPromise = this.runAllInternal(options).finally(() => {
+      this.runAllPromise = null;
+    });
+    return this.runAllPromise;
+  }
+
+  async runAllInternal(options = {}) {
     const jobs = this.getConfig().jobs.filter((job) => job.enabled !== false);
     for (const job of jobs) {
       await this.runJob(job.id, options).catch(() => {});
@@ -147,7 +183,7 @@ class BackupManager {
   async runJob(id, options = {}) {
     const job = this.getConfig().jobs.find((entry) => entry.id === id);
     if (!job) {
-      throw new Error('备份任务不存在');
+      throw new Error('同步任务不存在');
     }
     if (this.runningJobs.has(job.id)) {
       return { skipped: true, reason: 'running' };
@@ -164,7 +200,7 @@ class BackupManager {
 
     this.emitStatus(job, {
       status: 'running',
-      phase: options.reason === 'schedule' ? '定时备份中' : '备份中',
+      phase: options.reason === 'schedule' ? '定时同步中' : '同步中',
       startedAt,
       stats
     });
@@ -174,7 +210,7 @@ class BackupManager {
       await this.scanDirectory(job, '', uploadPlan, stats);
       this.emitStatus(job, {
         status: 'running',
-        phase: 'Scan complete, uploading',
+        phase: '扫描完成，正在同步',
         stats: {
           ...stats,
           pending: uploadPlan.length
@@ -190,7 +226,7 @@ class BackupManager {
       });
       this.emitStatus(job, {
         status: stats.failed ? 'warning' : 'done',
-        phase: '备份完成',
+        phase: '同步完成',
         stats
       });
       return { ok: true, stats };
@@ -202,7 +238,7 @@ class BackupManager {
       });
       this.emitStatus(job, {
         status: 'error',
-        phase: '备份失败',
+        phase: '同步失败',
         message: error.message,
         stats
       });
@@ -216,9 +252,63 @@ class BackupManager {
     const localDir = path.join(job.localPath, relativeDir);
     const remoteDir = joinRemote(job.remotePath, toRemotePath(relativeDir));
 
-    await this.ensureRemoteDir(remoteDir);
+    let localDirStat;
+    try {
+      localDirStat = await fs.promises.stat(localDir);
+    } catch (error) {
+      if (!relativeDir) {
+        throw new Error(`本地同步目录不可访问：${error.message}`);
+      }
+      stats.failed += 1;
+      this.emitStatus(job, {
+        status: 'running',
+        phase: '跳过不可访问的子目录',
+        fileName: relativeDir,
+        message: error.message,
+        stats
+      });
+      return;
+    }
+
+    if (!localDirStat.isDirectory()) {
+      return;
+    }
+
+    try {
+      await this.ensureRemoteDir(remoteDir);
+    } catch (error) {
+      stats.failed += 1;
+      this.emitStatus(job, {
+        status: 'running',
+        phase: '创建远端目录失败',
+        fileName: remoteDir,
+        message: error.message,
+        stats
+      });
+      if (!relativeDir) {
+        throw error;
+      }
+      return;
+    }
+
     const remoteFiles = await this.listRemoteFiles(remoteDir);
-    const entries = await fs.promises.readdir(localDir, { withFileTypes: true });
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(localDir, { withFileTypes: true });
+    } catch (error) {
+      stats.failed += 1;
+      this.emitStatus(job, {
+        status: 'running',
+        phase: '读取本地目录失败',
+        fileName: relativeDir || job.localPath,
+        message: error.message,
+        stats
+      });
+      if (!relativeDir) {
+        throw error;
+      }
+      return;
+    }
 
     const subDirs = [];
     const files = [];
@@ -236,31 +326,63 @@ class BackupManager {
     }
 
     // Scan subdirectories in parallel with concurrency limit
-    await runWithConcurrency(subDirs, SCAN_CONCURRENCY, (nextRelative) =>
-      this.scanDirectory(job, nextRelative, uploadPlan, stats)
-    );
+    await runWithConcurrency(subDirs.sort(), SCAN_CONCURRENCY, async (nextRelative) => {
+      await this.scanDirectory(job, nextRelative, uploadPlan, stats).catch((error) => {
+        stats.failed += 1;
+        this.emitStatus(job, {
+          status: 'running',
+          phase: '扫描子目录失败',
+          fileName: nextRelative,
+          message: error.message,
+          stats
+        });
+      });
+    });
 
     // Plan backup for all files in this directory in parallel
-    await runWithConcurrency(files, SCAN_CONCURRENCY, (nextRelative) =>
-      this.planBackupFile(job, nextRelative, remoteFiles, uploadPlan, stats)
-    );
+    await runWithConcurrency(files.sort(), SCAN_CONCURRENCY, async (nextRelative) => {
+      await this.planBackupFile(job, nextRelative, remoteFiles, uploadPlan, stats).catch((error) => {
+        stats.failed += 1;
+        this.emitStatus(job, {
+          status: 'running',
+          phase: '分析文件失败',
+          fileName: path.basename(nextRelative),
+          message: error.message,
+          stats
+        });
+      });
+    });
   }
 
   async planBackupFile(job, relativeFile, remoteFiles, uploadPlan, stats) {
     if (job.mediaOnly && !isMediaFile(relativeFile)) {
       return;
     }
+    if (isSkippableTempFile(relativeFile)) {
+      stats.skipped += 1;
+      return;
+    }
 
     const localFile = path.join(job.localPath, relativeFile);
     const localStat = await fs.promises.stat(localFile);
+    if (!isStableFile(localStat)) {
+      stats.skipped += 1;
+      this.emitStatus(job, {
+        status: 'running',
+        phase: '跳过仍在写入的文件',
+        fileName: path.basename(relativeFile),
+        stats
+      });
+      return;
+    }
+
     const remoteName = path.basename(relativeFile);
     const remoteFile = remoteFiles.get(remoteName);
     const localMtime = localStat.mtimeMs;
-    const remoteUploaded = remoteFile?.uploaded ? new Date(remoteFile.uploaded).getTime() : 0;
 
     stats.scanned += 1;
 
-    if (remoteFile && Number.isFinite(remoteUploaded) && remoteUploaded >= localMtime) {
+    if (isRemoteCurrent(remoteFile, localStat)) {
       stats.skipped += 1;
       this.emitStatus(job, {
         status: 'running',
@@ -276,6 +398,8 @@ class BackupManager {
       localFile,
       remotePath: plannedRemotePath,
       remoteName,
+      size: localStat.size,
+      mtimeMs: localStat.mtimeMs,
       isModified: Boolean(remoteFile)
     });
     this.emitStatus(job, {
@@ -291,6 +415,19 @@ class BackupManager {
   }
 
   async uploadBackupItem(job, item, stats) {
+    const snapshot = await safeStat(item.localFile);
+    if (!snapshot || !sameFileSnapshot(snapshot, item)) {
+      stats.skipped += 1;
+      this.emitStatus(job, {
+        status: 'running',
+        phase: '文件已变化，留待下次同步',
+        fileName: item.remoteName,
+        remotePath: item.remotePath,
+        stats
+      });
+      return;
+    }
+
     const transferId = makeTransferId('backup');
     const baseTransferPayload = {
       id: transferId,
@@ -406,6 +543,10 @@ class BackupManager {
     }
   }
 
+  hasRunnableJobs() {
+    return this.getConfig().jobs.some((job) => job.enabled !== false);
+  }
+
   async listRemoteFiles(remoteDir) {
     try {
       const data = await this.client.list(remoteDir);
@@ -443,6 +584,11 @@ class BackupManager {
     this.client.setConfig({ backupJobs: jobs });
   }
 
+  patchJobLastSyncCheck(id) {
+    const now = new Date().toISOString();
+    this.patchJobResult(id, { lastSyncCheck: now });
+  }
+
   emitStatus(job, payload) {
     this.emitBackup({
       type: 'backup',
@@ -470,7 +616,8 @@ function sanitizeJobs(jobs) {
       createdAt: job.createdAt || new Date().toISOString(),
       lastRunAt: job.lastRunAt || '',
       lastStatus: job.lastStatus || 'idle',
-      lastMessage: job.lastMessage || ''
+      lastMessage: job.lastMessage || '',
+      lastSyncCheck: job.lastSyncCheck || ''
     }));
 }
 
@@ -506,6 +653,44 @@ function joinRemote(...segments) {
 
 function isMediaFile(filePath) {
   return MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isSkippableTempFile(filePath) {
+  const name = path.basename(String(filePath || ''));
+  return TEMP_FILE_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+function isStableFile(stat) {
+  return Date.now() - Number(stat.mtimeMs || 0) >= MIN_STABLE_FILE_AGE_MS;
+}
+
+function isRemoteCurrent(remoteFile, localStat) {
+  if (!remoteFile) {
+    return false;
+  }
+
+  const remoteUploaded = remoteFile.uploaded ? new Date(remoteFile.uploaded).getTime() : 0;
+  if (!Number.isFinite(remoteUploaded) || remoteUploaded < localStat.mtimeMs) {
+    return false;
+  }
+
+  const remoteSize = Number(remoteFile.size ?? remoteFile.fileSize);
+  return !Number.isFinite(remoteSize) || remoteSize === localStat.size;
+}
+
+async function safeStat(filePath) {
+  try {
+    return await fs.promises.stat(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function sameFileSnapshot(stat, item) {
+  return stat.isFile()
+    && stat.size === item.size
+    && Math.abs(stat.mtimeMs - item.mtimeMs) < 1
+    && isStableFile(stat);
 }
 
 async function runWithConcurrency(items, limit, worker) {
